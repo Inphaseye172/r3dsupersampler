@@ -33,7 +33,14 @@ Expected<JobOptions> optionsFromJson(const json& j) {
         if (!s) return makeError(ErrorCode::InvalidArgument, "unknown size preset");
         o.size = *s;
     }
-    if (j.contains("customSize")) o.customSize = resample::OutputSize{j["customSize"]["width"], j["customSize"]["height"]};
+    if (j.contains("customSize")) {
+        const int64_t w = j["customSize"].value("width", int64_t{0}), h = j["customSize"].value("height", int64_t{0});
+        if (const std::string err = checkCustomSize(w, h); !err.empty())
+            return makeError(ErrorCode::InvalidArgument, "invalid customSize " + std::to_string(w) + "x" + std::to_string(h) + ": " + err);
+        o.customSize = resample::OutputSize{static_cast<uint32_t>(w), static_cast<uint32_t>(h)};
+    }
+    if (o.size == SizePreset::Custom && !o.customSize)
+        return makeError(ErrorCode::InvalidArgument, "size \"custom\" needs customSize {width, height}");
     if (j.contains("outputFormat")) {
         const std::string f = j["outputFormat"].get<std::string>();
         if (f != "keep") {

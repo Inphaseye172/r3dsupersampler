@@ -34,6 +34,40 @@ std::string expandName(const std::string& tmpl, const std::string& stem, const J
     return out;
 }
 
+std::string checkCustomSize(int64_t width, int64_t height) {
+    for (const int64_t v : {width, height}) {
+        const int64_t aligned = (v + 1) / 2 * 2; // odd values round up to even, as the size planner does
+        if (v < 0 || aligned < 16) return "width and height must be at least 16";
+        if (aligned > 65535) return "width and height must be at most 65534";
+    }
+    return {};
+}
+
+std::string parseSizeOption(const std::string& text, JobOptions& o) {
+    if (auto sp = sizePresetFromName(text); sp && *sp != SizePreset::Custom) {
+        o.size = *sp;
+        o.customSize.reset();
+        return {};
+    }
+    const std::string usage = "bad --size '" + text + "': use 6K, UHD, 2K, FHD, same or <width>x<height> (e.g. 1920x1080)";
+    const size_t x = text.find('x');
+    if (x == std::string::npos || x == 0 || x + 1 >= text.size()) return usage;
+    uint32_t dims[2] = {0, 0};
+    const std::string parts[2] = {text.substr(0, x), text.substr(x + 1)};
+    for (int i = 0; i < 2; ++i) {
+        for (char c : parts[i])
+            if (c < '0' || c > '9') return usage;
+        if (parts[i].size() > 6) return "bad --size '" + text + "': width and height must be at most 65534";
+        uint64_t v = 0;
+        for (char c : parts[i]) v = v * 10 + static_cast<uint64_t>(c - '0');
+        dims[i] = static_cast<uint32_t>(v);
+    }
+    if (const std::string err = checkCustomSize(dims[0], dims[1]); !err.empty()) return "bad --size '" + text + "': " + err;
+    o.size = SizePreset::Custom;
+    o.customSize = resample::OutputSize{dims[0], dims[1]};
+    return {};
+}
+
 fs::path normaliseSourcePath(const fs::path& p) {
     if (toUtf8Generic(p).rfind("mem://", 0) == 0) return p;
     fs::path q = p;

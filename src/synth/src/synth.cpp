@@ -80,6 +80,44 @@ BayerFrame makeFrame(const SynthParams& p) {
     return f;
 }
 
+std::optional<Timecode> parseStartTimecode(std::string_view text, Rational fps, std::string& note) {
+    note.clear();
+    auto bad = [&](const std::string& why) {
+        note = why;
+        return std::optional<Timecode>();
+    };
+    const char* usage = "use HH:MM:SS:FF, or HH:MM:SS;FF for drop-frame";
+    if (text.size() != 11 || text[2] != ':' || text[5] != ':' || (text[8] != ':' && text[8] != ';')) return bad(usage);
+    int v[4];
+    for (size_t i = 0; i < 4; ++i) {
+        const char a = text[i * 3], b = text[i * 3 + 1];
+        if (a < '0' || a > '9' || b < '0' || b > '9') return bad(usage);
+        v[i] = (a - '0') * 10 + (b - '0');
+    }
+    const bool df = text[8] == ';';
+    const int nominal = static_cast<int>(std::ceil(fps.toDouble() - 1e-6));
+    if (nominal <= 0) return bad("invalid frame rate");
+    if (v[0] > 23 || v[1] > 59 || v[2] > 59) return bad("hours must be 00-23, minutes and seconds 00-59");
+    if (v[3] >= nominal) return bad("frames must be below " + std::to_string(nominal) + " at this frame rate");
+    if (df && (nominal == 30 || nominal == 60)) {
+        const int dropped = nominal == 30 ? 2 : 4;
+        if (v[2] == 0 && v[1] % 10 != 0 && v[3] < dropped)
+            return bad("this drop-frame timecode does not exist (frame numbers 00-0" + std::to_string(dropped - 1) +
+                       " are skipped at the start of every minute except each tenth)");
+    } else if (df) {
+        note = "drop-frame counting applies only to 29.97 and 59.94 fps; the timecode is flagged drop-frame but no "
+               "frame numbers are skipped";
+    }
+    Timecode tc;
+    tc.hours = v[0];
+    tc.minutes = v[1];
+    tc.seconds = v[2];
+    tc.frames = v[3];
+    tc.dropFrame = df;
+    tc.fps = fps;
+    return tc;
+}
+
 std::vector<uint8_t> makeAudio(const AudioInfo& info, int64_t samples, uint32_t seed) {
     std::vector<uint8_t> out(static_cast<size_t>(samples) * info.frameBytes());
     for (int64_t s = 0; s < samples; ++s) {

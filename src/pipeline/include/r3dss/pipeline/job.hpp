@@ -66,6 +66,15 @@ Expected<BatchJob> batchJobFromJson(const std::string& text);
 // {profile}: "lossless" when the output codec has no rate control (CinemaDNG), else Q1/Q3/Q5/Q7.
 std::string expandName(const std::string& tmpl, const std::string& stem, const JobOptions& o, codec::Format outFmt);
 
+// Parses a --size value: a preset name (6K, UHD, 2K, FHD, same) or <W>x<H> with digits only. A custom
+// side must be 16..65534 once rounded up to even (whole 2x2 Bayer cells, at most 65535). On success sets
+// o.size / o.customSize and returns ""; otherwise returns the error message and leaves `o` unchanged.
+std::string parseSizeOption(const std::string& text, JobOptions& o);
+
+// Checks one custom output size the same way (16..65534 per side once rounded up to even).
+// Returns "" when valid, else the reason.
+std::string checkCustomSize(int64_t width, int64_t height);
+
 // Removes trailing separators and trailing "." components ("C001/" -> "C001", "C001\\" -> "C001" on
 // Windows) so the last component names the clip. "mem://" paths are returned unchanged.
 std::filesystem::path normaliseSourcePath(const std::filesystem::path& p);

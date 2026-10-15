@@ -42,6 +42,12 @@ Expected<codec::ClipInfo> writeSyntheticClip(const std::filesystem::path& dir, c
 // Builds the same clip in the in-memory codec store under "mem://<name>".
 Expected<codec::ClipInfo> makeMemoryClip(const std::string& name, const SynthClipParams& p);
 
+// Parses a start timecode strictly: "HH:MM:SS:FF" (non-drop) or "HH:MM:SS;FF" (drop-frame), with
+// hours 00-23, minutes/seconds 00-59 and frames below the nominal rate. Drop-frame numbers that do not
+// exist at 29.97/59.94 are refused. On failure returns nullopt and `note` holds the reason; on success
+// `note` may hold a remark (drop-frame flag at a rate where no frame numbers are dropped).
+std::optional<Timecode> parseStartTimecode(std::string_view text, Rational fps, std::string& note);
+
 // Fills an interleaved audio buffer with a deterministic test tone.
 std::vector<uint8_t> makeAudio(const AudioInfo& info, int64_t samples, uint32_t seed);
 

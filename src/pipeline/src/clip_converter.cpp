@@ -204,6 +204,12 @@ ClipResult convertClip(const ClipJob& jobIn, const JobOptions& options, const Cl
                             ? "REDCODE cannot be written (no public encoder exists); choose CinemaDNG, ProRes or DNxHR output"
                             : outFactory->displayName() + " cannot be written: " + outFactory->status().text);
 
+    if (options.size == SizePreset::Custom) {
+        if (!options.customSize) return failWith(ClipStatus::Failed, "invalid output size: custom size without width and height");
+        if (const std::string err = checkCustomSize(options.customSize->width, options.customSize->height); !err.empty())
+            return failWith(ClipStatus::Failed, "invalid output size " + std::to_string(options.customSize->width) + "x" +
+                                                    std::to_string(options.customSize->height) + ": " + err);
+    }
     auto sizeR = resample::planOutputSize(info.width, info.height, options.size, options.customSize,
                                           outFactory->caps().dimAlignment);
     if (!sizeR) {
@@ -419,6 +425,7 @@ ClipResult convertClip(const ClipJob& jobIn, const JobOptions& options, const Cl
         e.cancel = ctx.cancel;
         // Snapshot of what was just written; the verifier reads each file back from storage and compares.
         for (const auto& f : summary->files) {
+            if (!onDisk || isMemoryPath(f)) continue;
             auto d = fileDigest(f);
             if (!d) return failWith(ClipStatus::Failed, "verification failed: " + d.error().message);
             e.fileDigests.emplace_back(f, *d);
