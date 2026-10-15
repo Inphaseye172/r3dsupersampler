@@ -20,6 +20,9 @@ struct Expectation {
     bool decodeFirstAndLast = true;  // used only when decodeAllFrames is false
     // When set, the output's audio samples are compared byte for byte with this source clip's audio.
     std::filesystem::path audioReference;
+    // Files the writer produced, with fileDigest() taken right after writing. Each one is flushed,
+    // read back from storage and must still match (catches damage the decoder would not notice).
+    std::vector<std::pair<std::filesystem::path, uint64_t>> fileDigests;
     std::shared_ptr<CancellationToken> cancel;
     std::function<void(int64_t done, int64_t total)> progress; // frames decoded so far
 };
@@ -32,5 +35,8 @@ struct VerificationResult {
 };
 
 VerificationResult verifyOutput(const std::filesystem::path& output, const Expectation& e);
+
+// Fast 64-bit content digest of a file (integrity check, not cryptographic).
+Expected<uint64_t> fileDigest(const std::filesystem::path& p);
 
 } // namespace r3dss::pipeline

@@ -148,11 +148,13 @@ bool createFileExclusive(const fs::path& p) {
     return true;
 }
 
+#if defined(_WIN32) || defined(__APPLE__)
 std::string lowerAscii(std::string s) {
     for (char& c : s)
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     return s;
 }
+#endif
 
 } // namespace
 
@@ -204,6 +206,25 @@ std::vector<std::string> pathKeyAndParents(const std::string& key) {
         k = parent;
     }
     return out;
+}
+
+void flushAndDropCache(const fs::path& p, bool flush) {
+#ifdef _WIN32
+    if (!flush) return;
+    HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    FlushFileBuffers(h);
+    CloseHandle(h);
+#else
+    const int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    if (flush) (void)::fsync(fd);
+#if defined(POSIX_FADV_DONTNEED)
+    (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+#endif
+    ::close(fd);
+#endif
 }
 
 Expected<void> renameNoReplace(const fs::path& from, const fs::path& to) {

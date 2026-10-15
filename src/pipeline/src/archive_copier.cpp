@@ -5,39 +5,12 @@
 #include "r3dss/core/logger.hpp"
 #include "r3dss/core/sha256.hpp"
 #include "r3dss/pipeline/output_claim.hpp"
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
 namespace r3dss::pipeline {
 
 namespace fs = std::filesystem;
 
 namespace {
-
-// Flushes a file to the device and, where the OS allows, drops its cached pages so the next read
-// comes from the device rather than from memory. Best effort.
-void flushAndDropCache(const fs::path& p, bool flush) {
-#ifdef _WIN32
-    if (!flush) return;
-    HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    FlushFileBuffers(h);
-    CloseHandle(h);
-#else
-    const int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return;
-    if (flush) (void)::fsync(fd);
-#if defined(POSIX_FADV_DONTNEED)
-    (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
-#endif
-    ::close(fd);
-#endif
-}
 
 Expected<std::string> hashFresh(const fs::path& p, const std::shared_ptr<CancellationToken>& cancel) {
     flushAndDropCache(p, false);

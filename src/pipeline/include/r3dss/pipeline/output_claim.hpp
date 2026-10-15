@@ -24,6 +24,10 @@ bool pathKeysOverlap(const std::string& a, const std::string& b);
 // A pathKey() followed by the keys of all its parent folders, up to and including the root.
 std::vector<std::string> pathKeyAndParents(const std::string& key);
 
+// Optionally flushes a written file to the device, then (where the OS allows) drops its cached pages
+// so the next read comes from storage rather than memory. Best effort.
+void flushAndDropCache(const std::filesystem::path& p, bool flush);
+
 // Renames `from` to `to`, failing (never replacing) if `to` already exists. Works for files and
 // directories on the same volume.
 Expected<void> renameNoReplace(const std::filesystem::path& from, const std::filesystem::path& to);

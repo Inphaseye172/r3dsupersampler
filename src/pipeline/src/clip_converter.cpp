@@ -417,6 +417,12 @@ ClipResult convertClip(const ClipJob& jobIn, const JobOptions& options, const Cl
         if (info.audio.present()) e.audioReference = job.source;
         e.startTimecode = info.startTimecode;
         e.cancel = ctx.cancel;
+        // Snapshot of what was just written; the verifier reads each file back from storage and compares.
+        for (const auto& f : summary->files) {
+            auto d = fileDigest(f);
+            if (!d) return failWith(ClipStatus::Failed, "verification failed: " + d.error().message);
+            e.fileDigests.emplace_back(f, *d);
+        }
         auto lastVerifyReport = Clock::now();
         e.progress = [&](int64_t done, int64_t total) {
             const auto now = Clock::now();
