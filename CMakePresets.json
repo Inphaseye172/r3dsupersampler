@@ -1,0 +1,66 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "linux-ci",
+      "inherits": "base",
+      "displayName": "Linux (system packages)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "R3DSS_BUILD_GUI": "AUTO"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "inherits": "linux-ci",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "inherits": "base",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT}",
+        "R3DSS_BUILD_GUI": "AUTO"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows-release",
+      "inherits": "windows-base",
+      "displayName": "Windows x64 Release (MSVC + vcpkg + Qt)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "windows-debug",
+      "inherits": "windows-base",
+      "displayName": "Windows x64 Debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux-ci", "configurePreset": "linux-ci" },
+    { "name": "linux-debug", "configurePreset": "linux-debug" },
+    { "name": "windows-release", "configurePreset": "windows-release" },
+    { "name": "windows-debug", "configurePreset": "windows-debug" }
+  ],
+  "testPresets": [
+    { "name": "linux-ci", "configurePreset": "linux-ci", "output": { "outputOnFailure": true } },
+    { "name": "linux-debug", "configurePreset": "linux-debug", "output": { "outputOnFailure": true } },
+    { "name": "windows-release", "configurePreset": "windows-release", "output": { "outputOnFailure": true } },
+    { "name": "windows-debug", "configurePreset": "windows-debug", "output": { "outputOnFailure": true } }
+  ]
+}

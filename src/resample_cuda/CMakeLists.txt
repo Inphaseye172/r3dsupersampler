@@ -1,0 +1,6 @@
+add_library(r3dss_resample_cuda STATIC src/cuda_resampler.cu)
+add_library(r3dss::resample_cuda ALIAS r3dss_resample_cuda)
+target_include_directories(r3dss_resample_cuda PUBLIC include)
+target_link_libraries(r3dss_resample_cuda PUBLIC r3dss::resample)
+set_target_properties(r3dss_resample_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION OFF CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+target_compile_options(r3dss_resample_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)

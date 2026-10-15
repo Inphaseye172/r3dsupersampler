@@ -1,0 +1,12 @@
+build/
+build-*/
+out/
+.deps/
+.vs/
+.vscode/
+.idea/
+*.user
+CMakeUserPresets.json
+vcpkg_installed/
+*.log
+/dist/
