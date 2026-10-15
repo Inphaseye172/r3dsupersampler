@@ -101,6 +101,23 @@ Collisions findCollisions(const BatchJob& job) {
     return c;
 }
 
+// Copies (or confirms) the sidecars of a clip whose output folder already exists.
+void archiveSidecars(const ClipJob& job, ClipResult& r, const std::shared_ptr<CancellationToken>& cancel) {
+    std::error_code ec;
+    const fs::path root = clipSourceRoot(job.source);
+    if (root.empty() || !fs::is_directory(r.output, ec)) return;
+    for (const auto& rel : job.sidecars) {
+        if (cancel->isCancelled()) return;
+        if (rel.empty() || rel.is_absolute() || *rel.begin() == "..") {
+            r.copyErrors.push_back("invalid sidecar path " + toUtf8(rel));
+            continue;
+        }
+        auto c = copyAndVerify(root / rel, r.output / rel, cancel);
+        if (c) r.sidecarCopies.push_back(*c);
+        else r.copyErrors.push_back(toUtf8(root / rel) + ": " + c.error().toString());
+    }
+}
+
 // Files of an output that already existed (skipped clip), for the manifest of a re-run.
 std::vector<fs::path> listOutputFiles(const fs::path& out) {
     std::vector<fs::path> files;
@@ -175,6 +192,9 @@ BatchResult Scheduler::run(const BatchJob& job, const BatchCallbacks& cb) {
                 ctx.plan = perClip;
                 ctx.progress = [&, i](const ClipProgress& p) { if (cb.onClipProgress) cb.onClipProgress(i, p); };
                 r = convertClip(job.clips[i], job.options, ctx);
+                // Archive re-run: the clip's output already exists; still check (or complete) its sidecars.
+                if (r.status == ClipStatus::Skipped && r.skipReason == SkipReason::OutputExists && !job.clips[i].sidecars.empty())
+                    archiveSidecars(job.clips[i], r, ctx.cancel);
             }
             R3DSS_LOG_INFO("scheduler", toUtf8(job.clips[i].source) + ": " + clipStatusName(r.status) + " (" + r.message + ")");
             {
@@ -224,7 +244,8 @@ BatchResult Scheduler::run(const BatchJob& job, const BatchCallbacks& cb) {
             break;
         case ClipStatus::Cancelled: ++result.cancelled; break;
         }
-        if (c.status != ClipStatus::Done) continue;
+        if (c.status != ClipStatus::Done && !(c.status == ClipStatus::Skipped && c.skipReason == SkipReason::OutputExists))
+            continue;
         result.copies.insert(result.copies.end(), c.sidecarCopies.begin(), c.sidecarCopies.end());
         for (const auto& e : c.copyErrors) result.copyErrors.push_back(e);
     }

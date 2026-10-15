@@ -615,7 +615,11 @@ int main(int argc, char** argv) {
         if (!parseOptions(job.options)) return 1;
         job.clips = res->clips;
         job.copies = res->copies;
-        std::cout << "found " << job.clips.size() << " clips and " << job.copies.size() << " files to copy\n";
+        size_t sidecars = 0;
+        for (const auto& c : job.clips) sidecars += c.sidecars.size();
+        std::cout << "found " << job.clips.size() << " clips and " << job.copies.size() + sidecars << " files to copy";
+        if (sidecars) std::cout << " (" << sidecars << " inside clip folders)";
+        std::cout << "\n";
         if (!writeJob.empty()) {
             if (auto s = pipeline::saveBatchJob(job, fromUtf8(writeJob)); !s) { std::cerr << s.error().toString() << "\n"; return 1; }
             std::cout << "wrote " << writeJob << "\n";
