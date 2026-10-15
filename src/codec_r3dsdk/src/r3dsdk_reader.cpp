@@ -9,7 +9,9 @@
 // AudioSampleCount, DecodeAudio, TimecodeFramerate, AbsoluteTimecode, EdgeTimecode, Metadata*,
 // GetClipImageProcessingSettings, DecodeVideoFrame). Paths passed to the SDK are UTF-8 (per the
 // SDK header). Metadata keys are the documented string values of the RMD_* constants.
+// Written against the R3D SDK 9.x API: VideoDecodeJob has no BytesPerRow, rows are tightly packed.
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -65,7 +67,6 @@ const char* decodeStatusText(R3DSDK::DecodeStatus s) {
     switch (s) {
     case R3DSDK::DSDecodeOK: return "ok";
     case R3DSDK::DSOutputBufferInvalid: return "output buffer invalid (null, too small or not aligned)";
-    case R3DSDK::DSBytesPerRowInvalid: return "bytes per row invalid";
     case R3DSDK::DSRequestOutOfRange: return "request out of range";
     case R3DSDK::DSInvalidParameter: return "invalid parameter";
     case R3DSDK::DSIsDroppedFrame: return "dropped frame";
@@ -75,6 +76,8 @@ const char* decodeStatusText(R3DSDK::DecodeStatus s) {
     case R3DSDK::DSNoClipOpen: return "no clip open";
     case R3DSDK::DSCannotReadFromFile: return "I/O error reading the frame";
     case R3DSDK::DSInvalidPixelType: return "invalid pixel type";
+    case R3DSDK::DSUnsupportedClipFormat: return "clip format not supported for this decode";
+    case R3DSDK::DSParameterUnsupported: return "parameter not supported by the loaded SDK runtime (update the redsdk libraries)";
     default: return "unrecognised decode status";
     }
 }
@@ -221,9 +224,14 @@ public:
         case 16: mode = R3DSDK::DECODE_SIXTEENTH_RES_GOOD; break;
         default: return makeError(ErrorCode::InvalidArgument, "downscale must be 1, 2, 4, 8 or 16");
         }
-        const size_t w = clip_->Width() / opts.downscale, h = clip_->Height() / opts.downscale;
-        const size_t rowBytes = (w * 3 * sizeof(uint16_t) + 15) / 16 * 16;
-        const size_t bytes = rowBytes * h;
+        // Output size follows RED's sample code (integer division). Rows are tightly packed (SDK 9.x
+        // has no row stride); the buffer is sized for a rounded-up height in case the SDK emits a
+        // final partial row, which is then ignored.
+        const size_t d = opts.downscale;
+        const size_t w = clip_->Width() / d, h = clip_->Height() / d;
+        const size_t hAlloc = (clip_->Height() + d - 1) / d;
+        const size_t rowBytes = w * 3 * sizeof(uint16_t);
+        const size_t bytes = rowBytes * hAlloc;
         uint8_t* buf = video_.get(bytes, 16);
 
         R3DSDK::ImageProcessingSettings ips;
@@ -231,7 +239,6 @@ public:
         job.Mode = mode;
         job.PixelType = R3DSDK::PixelType_16Bit_RGB_Interleaved;
         job.OutputBuffer = buf;
-        job.BytesPerRow = rowBytes;
         job.OutputBufferSize = bytes;
         job.ImageProcessing = nullptr;
         job.HdrProcessing = nullptr;
@@ -250,8 +257,7 @@ public:
         out.colorSpace = opts.primaryDevelopment ? "REDWideGamutRGB" : "clip default";
         out.transfer = opts.primaryDevelopment ? "Log3G10" : "clip default";
         out.data.resize(w * h * 3);
-        for (size_t y = 0; y < h; ++y)
-            std::memcpy(out.data.data() + y * w * 3, buf + y * rowBytes, w * 3 * sizeof(uint16_t));
+        std::memcpy(out.data.data(), buf, rowBytes * h);
         out.meta = FrameMetadata{};
         if (auto tc = frameTimecode(index)) out.meta.timecode = *tc;
         return {};

@@ -9,10 +9,6 @@ if(R3DSS_HAVE_R3DSDK)
   if(NOT WIN32)
     target_link_libraries(r3dss_codec_r3dsdk PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
   endif()
-  if(MSVC)
-    # RED's headers predate /permissive- conformance mode; compile the SDK translation units permissively.
-    target_compile_options(r3dss_codec_r3dsdk PRIVATE /permissive)
-  endif()
   # Runtime libraries go next to the executables under redsdk/ (also what the installer bundles).
   install(DIRECTORY "${R3DSDK_RUNTIME_DIR}/" DESTINATION bin/redsdk)
 else()
