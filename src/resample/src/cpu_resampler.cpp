@@ -13,8 +13,12 @@ Expected<void> validateParams(const BayerFrame& in, const ResampleParams& p) {
     if (p.outWidth > in.width || p.outHeight > in.height)
         return makeError(ErrorCode::Unsupported, "upscaling is not supported (output larger than source)");
     if (in.data.size() != in.sampleCount()) return makeError(ErrorCode::InvalidArgument, "frame data size mismatch");
+    // The output is clamped to WhiteLevel (I5); a zero WhiteLevel would silently turn the frame black.
+    if (in.white == 0) return makeError(ErrorCode::InvalidArgument, "white level must be greater than 0");
     return {};
 }
+
+uint32_t outputCeiling(const BayerFrame& in) { return std::min(in.maxCode(), in.white); }
 
 namespace {
 
@@ -112,8 +116,13 @@ private:
             }
         });
 
-        // Vertical pass: out plane
-        const float maxCode = static_cast<float>(out.maxCode());
+        // Vertical pass: out plane. Clipping rule (docs/RESAMPLING.md §4, contract I5): the main-kernel result
+        // is replaced by the Area result when any main-kernel source tap is >= white - 1 (flag carried from the
+        // horizontal pass) or when the main-kernel result itself reaches white - 1 (overshoot of an unclipped
+        // near-white edge). Area weights are non-negative, so the Area result of taps that are all below
+        // white - 1 stays below white - 1: no site becomes saturated unless the source was. Finally the value is
+        // rounded and clamped to [0, min(maxCode, white)].
+        const float ceiling = static_cast<float>(outputCeiling(in));
         parallel(dph, [&](size_t jj) {
             const uint32_t j = static_cast<uint32_t>(jj);
             const float* w = ty.w(j);
@@ -128,9 +137,9 @@ private:
                     acc += w[k] * tmp_[idx];
                     if (clipAware) clip |= tmpClip_[idx] != 0;
                 }
-                if (clip) acc = areaSample(in, pt, i, j, ox, oy, spw, sph);
+                if (clipAware && (clip || acc >= clipThr)) acc = areaSample(in, pt, i, j, ox, oy, spw, sph);
                 const float r = std::round(acc);
-                orow[static_cast<size_t>(i) * 2] = static_cast<uint16_t>(std::clamp(r, 0.0f, maxCode));
+                orow[static_cast<size_t>(i) * 2] = static_cast<uint16_t>(std::clamp(r, 0.0f, ceiling));
             }
         });
     }

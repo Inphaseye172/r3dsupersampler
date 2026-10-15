@@ -34,6 +34,11 @@ struct DevTaps {
     uint32_t len = 0;
 };
 
+// Arithmetic mirrors cpu_resampler.cpp operation by operation: same tap order, every multiply and add rounded
+// separately (__fmul_rn/__fadd_rn forbid the fused multiply-add nvcc would otherwise emit; the CPU library is
+// built with -ffp-contract=off), and roundf (half away from zero, like std::round). CPU and GPU therefore take
+// the same branch of the clipping rule at the white - 1 threshold.
+
 // Horizontal pass: one thread per (output column, source plane row).
 __global__ void kHorizontal(const uint16_t* __restrict__ src, uint32_t srcW, uint32_t ox, uint32_t oy, uint32_t sph,
                             const int32_t* __restrict__ start, const uint16_t* __restrict__ count,
@@ -50,14 +55,15 @@ __global__ void kHorizontal(const uint16_t* __restrict__ src, uint32_t srcW, uin
     bool clip = false;
     for (int k = 0; k < cnt; ++k) {
         const float v = (float)row[(size_t)(st + k) * 2];
-        acc += w[k] * v;
+        acc = __fadd_rn(acc, __fmul_rn(w[k], v));
         clip |= v >= clipThr;
     }
     tmp[(size_t)j * dpw + i] = acc;
     if (tmpClip) tmpClip[(size_t)j * dpw + i] = clip ? 1 : 0;
 }
 
-// Vertical pass with clip-aware fallback evaluated directly on the source plane.
+// Vertical pass with the clipping rule (docs/RESAMPLING.md §4, contract I5), the Area fallback evaluated directly
+// on the source plane. `tmpClip` is null when the rule is off (clip-aware disabled or Area kernel).
 __global__ void kVertical(const float* __restrict__ tmp, const uint8_t* __restrict__ tmpClip, uint32_t dpw, uint32_t dph,
                           const int32_t* __restrict__ startY, const uint16_t* __restrict__ countY,
                           const float* __restrict__ weightsY, uint32_t maxTapsY,
@@ -66,7 +72,7 @@ __global__ void kVertical(const float* __restrict__ tmp, const uint8_t* __restri
                           const float* __restrict__ aWX, uint32_t aMaxX,
                           const int32_t* __restrict__ aStartY, const uint16_t* __restrict__ aCountY,
                           const float* __restrict__ aWY, uint32_t aMaxY,
-                          float maxCode, uint16_t* __restrict__ dst, uint32_t dstW) {
+                          float clipThr, float ceiling, uint16_t* __restrict__ dst, uint32_t dstW) {
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t j = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= dpw || j >= dph) return;
@@ -77,22 +83,25 @@ __global__ void kVertical(const float* __restrict__ tmp, const uint8_t* __restri
     bool clip = false;
     for (int k = 0; k < cnt; ++k) {
         const size_t idx = (size_t)(st + k) * dpw + i;
-        acc += w[k] * tmp[idx];
+        acc = __fadd_rn(acc, __fmul_rn(w[k], tmp[idx]));
         if (tmpClip) clip |= tmpClip[idx] != 0;
     }
-    if (clip) {
+    // Any main-kernel source tap >= white - 1, or the main-kernel result itself >= white - 1: use Area.
+    if (tmpClip && (clip || acc >= clipThr)) {
         const float* wx = aWX + (size_t)i * aMaxX;
         const float* wy = aWY + (size_t)j * aMaxY;
         acc = 0.0f;
         for (int ky = 0; ky < aCountY[j]; ++ky) {
             const uint16_t* row = src + ((size_t)(aStartY[j] + ky) * 2 + oy) * srcW + ox;
             float racc = 0.0f;
-            for (int kx = 0; kx < aCountX[i]; ++kx) racc += wx[kx] * (float)row[(size_t)(aStartX[i] + kx) * 2];
-            acc += wy[ky] * racc;
+            for (int kx = 0; kx < aCountX[i]; ++kx)
+                racc = __fadd_rn(racc, __fmul_rn(wx[kx], (float)row[(size_t)(aStartX[i] + kx) * 2]));
+            acc = __fadd_rn(acc, __fmul_rn(wy[ky], racc));
         }
     }
-    const float r = rintf(acc);
-    dst[(size_t)(2 * j + oy) * dstW + 2 * i + ox] = (uint16_t)fminf(fmaxf(r, 0.0f), maxCode);
+    // round half away from zero (std::round on the CPU), then clamp to [0, min(maxCode, white)].
+    const float r = roundf(acc);
+    dst[(size_t)(2 * j + oy) * dstW + 2 * i + ox] = (uint16_t)fminf(fmaxf(r, 0.0f), ceiling);
 }
 
 class CudaResampler final : public IResampler {
@@ -128,7 +137,7 @@ public:
         const uint32_t sph = in.height / 2, dpw = p.outWidth / 2, dph = p.outHeight / 2;
         const float clipThr = static_cast<float>(in.white) - 1.0f;
         const bool clipAware = p.clipAware && p.kernel != ResampleKernel::Area;
-        const float maxCode = static_cast<float>(out.maxCode());
+        const float ceiling = static_cast<float>(outputCeiling(in));
         for (int plane = 0; plane < 4; ++plane) {
             const uint32_t ox = planeOffsetX(plane), oy = planeOffsetY(plane);
             const DevTaps& tx = taps_[plane][0];
@@ -143,7 +152,7 @@ public:
             kVertical<<<gridV, blk, 0, stream_>>>(dTmp_, clipAware ? dTmpClip_ : nullptr, dpw, dph, ty.start, ty.count,
                                                   ty.weights, ty.maxTaps, dSrc_, in.width, ox, oy, ax.start, ax.count,
                                                   ax.weights, ax.maxTaps, ay.start, ay.count, ay.weights, ay.maxTaps,
-                                                  maxCode, dDst_, p.outWidth);
+                                                  clipThr, ceiling, dDst_, p.outWidth);
         }
         if (cudaMemcpyAsync(out.data.data(), dDst_, out.byteSize(), cudaMemcpyDeviceToHost, stream_) != cudaSuccess)
             return makeError(ErrorCode::Internal, "cudaMemcpy D2H failed");
