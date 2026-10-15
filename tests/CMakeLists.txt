@@ -9,6 +9,7 @@ add_executable(r3dss-tests
   test_cuda.cpp
   test_red_container.cpp
   test_samples.cpp
+  test_r3dsdk.cpp
 )
 target_link_libraries(r3dss-tests PRIVATE r3dss::pipeline r3dss::synth Catch2::Catch2WithMain)
 target_include_directories(r3dss-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

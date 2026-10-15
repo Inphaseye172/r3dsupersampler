@@ -81,6 +81,20 @@ struct BayerFrame {
     uint32_t maxCode() const { return (1u << bits) - 1u; }
 };
 
+// A developed (debayered) RGB image, 16 bits per channel, interleaved R,G,B, row-major.
+// Produced only by decoders that cannot deliver the sensor mosaic (the RED R3D SDK); used for
+// identification, verification and previews, never as a RAW-to-RAW path.
+struct RgbFrame {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::vector<uint16_t> data; // width * height * 3
+    std::string colorSpace;     // e.g. "REDWideGamutRGB"
+    std::string transfer;       // e.g. "Log3G10"
+    FrameMetadata meta;
+    int64_t index = 0;
+    size_t sampleCount() const { return static_cast<size_t>(width) * height * 3; }
+};
+
 // ---- Audio ----------------------------------------------------------------------------------
 enum class SampleFormat : uint8_t { PCM16, PCM24, PCM32, Float32 };
 const char* sampleFormatName(SampleFormat f);

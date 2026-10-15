@@ -123,6 +123,11 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
     if (!inFactory) return failWith(ClipStatus::Failed, "not a recognised raw clip: " + toUtf8(job.source));
     if (!inFactory->caps().read)
         return failWith(ClipStatus::Failed, inFactory->displayName() + " cannot be decoded: " + inFactory->status().text);
+    if (!inFactory->caps().readsMosaic)
+        return failWith(ClipStatus::Failed,
+                        inFactory->displayName() +
+                            ": RAW-to-RAW conversion is not available. Its decoder returns only a developed RGB image, "
+                            "not the sensor mosaic (docs/FEASIBILITY.md).");
     auto reader = inFactory->makeReader();
     auto infoR = reader->open(job.source);
     if (!infoR) return failWith(ClipStatus::Failed, "open failed: " + infoR.error().toString());

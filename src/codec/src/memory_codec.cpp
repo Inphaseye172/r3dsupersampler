@@ -130,6 +130,7 @@ public:
     Capabilities caps() const override {
         Capabilities c;
         c.read = c.write = c.lossless = true;
+        c.readsMosaic = true;
         c.dimAlignment = 2;
         return c;
     }

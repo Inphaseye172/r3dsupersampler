@@ -10,7 +10,9 @@ public:
     std::string displayName() const override { return "REDCODE RAW / R3D NE / NEV (RED R3D SDK)"; }
     Capabilities caps() const override {
         Capabilities c;
-        c.read = builtWithSdk() && initialize() && makeSdkReader() != nullptr;
+        c.read = builtWithSdk() && initialize();
+        c.readsRgb = c.read;
+        c.readsMosaic = false; // the RED SDK never exposes the sensor mosaic
         c.write = false;
         c.cuda = false;
         c.rateControl = false;
@@ -27,12 +29,9 @@ public:
         } else if (!initialize()) {
             s.state = ModuleState::MissingSdk;
             s.text = statusText();
-        } else if (!makeSdkReader()) {
-            s.state = ModuleState::Stub;
-            s.text = statusText() + "; decoder arrives in milestone 2 (container probing only)";
         } else {
             s.state = ModuleState::Available;
-            s.text = statusText();
+            s.text = statusText() + "; decodes developed RGB only (no sensor mosaic, so no RAW-to-RAW)";
         }
         return s;
     }

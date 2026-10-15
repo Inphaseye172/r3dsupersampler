@@ -19,6 +19,8 @@ const char* formatExtension(Format f); // ".dng" / ".R3D"
 
 struct Capabilities {
     bool read = false;
+    bool readsMosaic = false; // readFrame() returns the undebayered sensor mosaic (required for RAW-to-RAW)
+    bool readsRgb = false;    // readRgbFrame() returns a developed RGB image
     bool write = false;
     bool cuda = false;        // codec can decode/encode on CUDA itself
     bool rateControl = false; // writeFrame honours FrameBudget
@@ -61,6 +63,16 @@ public:
     virtual Expected<AudioBlock> readAudio(int64_t firstSample, int64_t count) = 0;
     virtual Expected<Timecode> frameTimecode(int64_t index) = 0;
     virtual void close() = 0;
+
+    // Developed RGB decode, for decoders whose SDK never exposes the sensor mosaic.
+    struct RgbOptions {
+        uint32_t downscale = 1;          // 1 = full resolution, 2 = half, 4, 8, 16
+        bool primaryDevelopment = true;  // true: scene-referred (e.g. Log3G10 / REDWideGamutRGB), no look
+    };
+    virtual Expected<void> readRgbFrame(int64_t index, RgbFrame& out, const RgbOptions& opts) {
+        (void)index; (void)out; (void)opts;
+        return makeError(ErrorCode::Unsupported, "this codec does not provide developed RGB frames");
+    }
 };
 
 struct WriterConfig {

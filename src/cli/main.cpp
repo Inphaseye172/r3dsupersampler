@@ -2,11 +2,14 @@
 #include <CLI/CLI.hpp>
 #include <chrono>
 #include <iomanip>
+#include <map>
 #include <iostream>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include "r3dss/codec/codec.hpp"
 #include "r3dss/core/paths.hpp"
+#include "r3dss/codec_cdng/tiff.hpp"
+#include "r3dss/codec_cdng/wav.hpp"
 #include "r3dss/codec_red/red_container.hpp"
 #include "r3dss/core/hardware.hpp"
 #include "r3dss/core/logger.hpp"
@@ -138,6 +141,140 @@ int cmdProbe(const fs::path& path, bool chunks) {
     return 0;
 }
 
+// ---- decode: exercise a decoder that returns developed RGB (the RED R3D SDK) --------------------
+Expected<void> writeRgbTiff(const fs::path& path, const RgbFrame& f) {
+    codec::tiff::Writer w;
+    std::vector<uint8_t> bytes(f.data.size() * 2);
+    for (size_t i = 0; i < f.data.size(); ++i) {
+        bytes[2 * i] = static_cast<uint8_t>(f.data[i]);
+        bytes[2 * i + 1] = static_cast<uint8_t>(f.data[i] >> 8);
+    }
+    const uint64_t off = w.appendData(bytes);
+    codec::tiff::Writer::IfdBuilder ifd;
+    using namespace codec::tiff;
+    ifd.setU32(tag::ImageWidth, {f.width});
+    ifd.setU32(tag::ImageLength, {f.height});
+    ifd.setU16(tag::BitsPerSample, {16, 16, 16});
+    ifd.setU16(tag::Compression, {1});
+    ifd.setU16(tag::Photometric, {2});
+    ifd.setU32(tag::StripOffsets, {static_cast<uint32_t>(off)});
+    ifd.setU16(tag::SamplesPerPixel, {3});
+    ifd.setU32(tag::RowsPerStrip, {f.height});
+    ifd.setU32(tag::StripByteCounts, {static_cast<uint32_t>(bytes.size())});
+    ifd.setU16(tag::PlanarConfiguration, {1});
+    ifd.setAscii(tag::Software, "r3dss-cli decode (" + f.colorSpace + " / " + f.transfer + ")");
+    w.setFirstIfd(w.writeIfd(ifd));
+    return w.save(path);
+}
+
+int cmdDecode(const fs::path& path, int64_t frame, bool all, uint32_t downscale, bool look, const std::string& out,
+              const std::string& audioOut) {
+    auto f = codec::CodecRegistry::instance().probe(path);
+    if (!f) {
+        std::cerr << "not a recognised clip: " << toUtf8(path) << "\n";
+        return 2;
+    }
+    if (!f->caps().readsRgb) {
+        std::cerr << f->displayName() << " cannot decode to RGB in this build: " << f->status().text << "\n";
+        return 3;
+    }
+    auto reader = f->makeReader();
+    auto info = reader->open(path);
+    if (!info) {
+        std::cerr << "open failed: " << info.error().toString() << "\n";
+        return 3;
+    }
+    codec::ICodecReader::RgbOptions opts;
+    opts.downscale = downscale;
+    opts.primaryDevelopment = !look;
+    nlohmann::json j;
+    j["clip"] = toUtf8(path);
+    j["source"] = info->sourceLabel;
+    j["size"] = {info->width, info->height};
+    j["frames"] = info->frameCount;
+    j["fps"] = info->fps.toDouble();
+    if (info->startTimecode) j["timecode"] = info->startTimecode->toString();
+    j["downscale"] = downscale;
+    j["pipeline"] = look ? "clip default look" : "primary development (REDWideGamutRGB / Log3G10)";
+    const int64_t first = all ? 0 : frame;
+    const int64_t last = all ? info->frameCount - 1 : frame;
+    if (first < 0 || last >= info->frameCount) {
+        std::cerr << "frame out of range (clip has " << info->frameCount << " frames)\n";
+        return 1;
+    }
+    RgbFrame img;
+    double totalMs = 0;
+    int64_t decoded = 0;
+    for (int64_t i = first; i <= last; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        auto r = reader->readRgbFrame(i, img, opts);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (!r) {
+            j["error"] = r.error().toString();
+            j["failedFrame"] = i;
+            std::cout << j.dump(2) << "\n";
+            return 4;
+        }
+        totalMs += ms;
+        ++decoded;
+        if (i == first) {
+            uint16_t mn[3] = {65535, 65535, 65535}, mx[3] = {0, 0, 0};
+            double sum[3] = {0, 0, 0};
+            for (size_t k = 0; k < img.data.size(); ++k) {
+                const int c = static_cast<int>(k % 3);
+                mn[c] = std::min(mn[c], img.data[k]);
+                mx[c] = std::max(mx[c], img.data[k]);
+                sum[c] += img.data[k];
+            }
+            const double px = static_cast<double>(img.width) * img.height;
+            j["firstFrame"] = {{"index", i}, {"width", img.width}, {"height", img.height},
+                               {"timecode", img.meta.timecode ? img.meta.timecode->toString() : ""},
+                               {"min", {mn[0], mn[1], mn[2]}}, {"max", {mx[0], mx[1], mx[2]}},
+                               {"mean", {sum[0] / px, sum[1] / px, sum[2] / px}}, {"ms", ms}};
+            if (!out.empty()) {
+                if (auto w = writeRgbTiff(fromUtf8(out), img); !w) {
+                    std::cerr << "cannot write " << out << ": " << w.error().toString() << "\n";
+                    return 5;
+                }
+                j["written"] = out;
+            }
+        }
+    }
+    j["decoded"] = decoded;
+    j["msPerFrame"] = decoded ? totalMs / static_cast<double>(decoded) : 0.0;
+    j["decodeFps"] = totalMs > 0 ? 1000.0 * static_cast<double>(decoded) / totalMs : 0.0;
+    if (!audioOut.empty() && info->audio.present()) {
+        codec::wav::StreamWriter wav;
+        if (auto b = wav.begin(fromUtf8(audioOut), info->audio); !b) {
+            std::cerr << b.error().toString() << "\n";
+            return 5;
+        }
+        int64_t pos = 0;
+        for (;;) {
+            auto ab = reader->readAudio(pos, 48000);
+            if (!ab) {
+                std::cerr << "audio: " << ab.error().toString() << "\n";
+                return 4;
+            }
+            if (ab->sampleCount == 0) break;
+            if (auto w = wav.write(*ab); !w) {
+                std::cerr << w.error().toString() << "\n";
+                return 5;
+            }
+            pos += ab->sampleCount;
+        }
+        if (auto fin = wav.finish(); !fin) {
+            std::cerr << fin.error().toString() << "\n";
+            return 5;
+        }
+        j["audio"] = {{"channels", info->audio.channels}, {"rate", info->audio.sampleRate},
+                      {"format", sampleFormatName(info->audio.format)}, {"samples", pos},
+                      {"expectedSamples", info->audio.sampleCount}, {"written", audioOut}};
+    }
+    std::cout << j.dump(2) << "\n";
+    return 0;
+}
+
 int runBatch(const pipeline::BatchJob& job, bool quiet) {
     pipeline::Scheduler sched;
     pipeline::BatchCallbacks cb;
@@ -192,6 +329,19 @@ int main(int argc, char** argv) {
     auto* probe = app.add_subcommand("probe", "Print clip information as JSON");
     probe->add_option("path", probePath, "clip file or CinemaDNG directory")->required();
     probe->add_flag("--chunks", probeChunks, "also list the RED container chunks, tag histogram and header strings");
+
+    // decode
+    auto* decode = app.add_subcommand("decode", "Decode frames to developed RGB (RED SDK clips) and report timing");
+    std::string decodePath, decodeOut, decodeAudio, decodeRes = "full";
+    int64_t decodeFrame = 0;
+    bool decodeAll = false, decodeLook = false;
+    decode->add_option("path", decodePath, "clip file")->required();
+    decode->add_option("--frame", decodeFrame, "frame to decode (default 0)");
+    decode->add_flag("--all", decodeAll, "decode every frame (the first one is written with --out)");
+    decode->add_option("--res", decodeRes, "full|half|quarter|eighth|sixteenth");
+    decode->add_flag("--look", decodeLook, "apply the clip's look instead of primary development (Log3G10 / RWG)");
+    decode->add_option("--out", decodeOut, "write the first decoded frame as a 16-bit RGB TIFF");
+    decode->add_option("--audio", decodeAudio, "write the clip's audio as WAV");
 
     // convert
     auto* convert = app.add_subcommand("convert", "Convert clips or run a job file");
@@ -293,6 +443,15 @@ int main(int argc, char** argv) {
 
     if (codecs->parsed()) return codecsJson ? cmdCodecsJson() : cmdCodecs();
     if (probe->parsed()) return cmdProbe(fromUtf8(probePath), probeChunks);
+    if (decode->parsed()) {
+        const std::map<std::string, uint32_t> res = {{"full", 1}, {"half", 2}, {"quarter", 4}, {"eighth", 8}, {"sixteenth", 16}};
+        auto it = res.find(decodeRes);
+        if (it == res.end()) {
+            std::cerr << "bad --res\n";
+            return 1;
+        }
+        return cmdDecode(fromUtf8(decodePath), decodeFrame, decodeAll, it->second, decodeLook, decodeOut, decodeAudio);
+    }
     if (synthCmd->parsed()) {
         synth::SynthClipParams p;
         p.frame.width = sw;

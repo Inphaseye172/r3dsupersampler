@@ -568,6 +568,7 @@ public:
     Capabilities caps() const override {
         Capabilities c;
         c.read = c.write = c.lossless = true;
+        c.readsMosaic = true;
         c.rateControl = false;
         c.dimAlignment = 2;
         c.bitDepths = {8, 10, 12, 14, 16};
