@@ -12,7 +12,8 @@ rights to third-party software, formats or patents, in particular:
   * Codec and format rights (REDCODE, Nikon N-RAW / R3D NE, intoPIX TicoRAW / JPEG XS,
     Apple ProRes, Avid DNxHR, Adobe DNG) belong to their owners; see PATENTS.md.
   * Binary releases additionally contain third-party libraries (Qt under the LGPL, and
-    others listed in docs/REDISTRIBUTION.md) under their own licenses.
+    others) under their own licenses; their texts and a list are in the licenses folder
+    installed next to this file (third_party/licenses in the source tree).
 
 "Supersampler" (supersampler.app) is an unrelated third-party product and is not affiliated
 with this project.
