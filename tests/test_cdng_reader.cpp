@@ -465,6 +465,22 @@ TEST_CASE("BlackLevel repeat patterns and BlackLevelDeltaH/V") {
         REQUIRE(o.info.black == std::array<uint32_t, 4>{2000, 3000, 2000, 3000});
         REQUIRE(readOk(*o.reader, 0).data == m); // nothing folded
     }
+    SECTION("rational BlackLevel: truncated as LibRaw does, samples untouched") {
+        // LibRaw (rawpy 0.27.1) reports black_level_per_channel 4000/4100/4300/4200 (R,G,B,G2)
+        // for [4000.5, 4100, 4200, 4300] in a 2x2 repeat.
+        const fs::path dir = tmpDir("cdng-blrat");
+        DngSpec s;
+        s.width = W;
+        s.height = H;
+        s.tags = [](tiff::Writer::IfdBuilder& b) {
+            b.setU16(tiff::tag::BlackLevelRepeatDim, {2, 2});
+            b.setRational(tiff::tag::BlackLevel, {{40005, 10}, {41000, 10}, {42000, 10}, {43000, 10}});
+        };
+        writeDng(dir / "f_000000.dng", m, s);
+        auto o = openClip(dir);
+        REQUIRE(o.info.black == std::array<uint32_t, 4>{4000, 4100, 4200, 4300});
+        REQUIRE(readOk(*o.reader, 0).data == m);
+    }
     SECTION("2x1 repeat and a single value") {
         const fs::path dir = tmpDir("cdng-bl21");
         DngSpec s;

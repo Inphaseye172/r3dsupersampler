@@ -330,8 +330,13 @@ Expected<Levels> levelsOf(const Ifd& ifd, const FrameGeometry& g, const RawRegio
                 n += ny * nx;
             }
         }
-        const double siteMean = (n ? sum / static_cast<double>(n) : 0.0) + mh + mv;
-        lv.black[s] = static_cast<uint32_t>(std::lround(std::clamp(siteMean, 0.0, 65535.0)));
+        // LibRaw's integer view of the levels (src/metadata/tiff.cpp): BlackLevel values are
+        // truncated, each delta mean is rounded and added. When nothing varies inside the site this
+        // is the black LibRaw reports for the source; when something does, the fold below keeps
+        // value - black exact whatever integer is chosen here.
+        const double repMean = n ? sum / static_cast<double>(n) : 0.0;
+        const double siteBlack = std::trunc(std::max(0.0, repMean)) + std::floor(mh + 0.5) + std::floor(mv + 0.5);
+        lv.black[s] = static_cast<uint32_t>(std::clamp(siteBlack, 0.0, 65535.0));
     }
     lv.fold = varies;
     return lv;
