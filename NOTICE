@@ -1,14 +1,23 @@
-Supersampler
+r3dss (working name; the product name has not been chosen)
 Copyright 2026 Anchor Point Studio
 
-This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+The source code in this repository is licensed under the Apache License, Version 2.0
+(see LICENSE). That license covers only the code written for this project. It grants no
+rights to third-party software, formats or patents, in particular:
 
-It decodes REDCODE RAW, Nikon R3D NE and NEV clips through the RED R3D SDK, which is
-proprietary software of RED Digital Cinema distributed under RED's own license and
-never included in this source repository. Third-party components bundled in binary
-releases are listed with their licenses in docs/FEASIBILITY.md and PATENTS.md.
+  * The RED R3D SDK (headers, libraries and runtime DLLs) is proprietary software of RED
+    Digital Cinema, licensed separately by RED to whoever downloads it. It is never included
+    in this repository. Whether a binary release may bundle its runtime is governed by RED's
+    license agreement, not by this project's license.
+  * Codec and format rights (REDCODE, Nikon N-RAW / R3D NE, intoPIX TicoRAW / JPEG XS,
+    Apple ProRes, Avid DNxHR, Adobe DNG) belong to their owners; see PATENTS.md.
+  * Binary releases additionally contain third-party libraries (Qt under the LGPL, and
+    others listed in docs/REDISTRIBUTION.md) under their own licenses.
 
-"RED", "REDCODE", "R3D" and "KOMODO" are trademarks of RED Digital Cinema. "Nikon",
-"N-RAW" and "NEV" are trademarks of Nikon Corporation. "ProRes" is a trademark of Apple
-Inc. "DNxHR" is a trademark of Avid Technology, Inc. "DNG" and "CinemaDNG" are trademarks
-of Adobe Inc. They are used here only to describe compatibility.
+"Supersampler" (supersampler.app) is an unrelated third-party product and is not affiliated
+with this project.
+
+"RED", "REDCODE", "R3D" and "KOMODO" are trademarks of RED Digital Cinema. "Nikon", "N-RAW"
+and "NEV" are trademarks of Nikon Corporation. "TicoRAW" is a trademark of intoPIX. "ProRes"
+is a trademark of Apple Inc. "DNxHR" is a trademark of Avid Technology, Inc. "DNG" and
+"CinemaDNG" are trademarks of Adobe Inc. They are used here only to describe compatibility.

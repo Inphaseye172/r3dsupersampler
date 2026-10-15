@@ -1,3 +1,7 @@
 add_executable(r3dss-cli main.cpp)
 target_link_libraries(r3dss-cli PRIVATE r3dss::pipeline r3dss::synth CLI11::CLI11 nlohmann_json::nlohmann_json)
+target_compile_definitions(r3dss-cli PRIVATE R3DSS_VERSION_STRING="${PROJECT_VERSION}")
+if(R3DSS_RELEASE)
+  target_compile_definitions(r3dss-cli PRIVATE R3DSS_RELEASE_BUILD=1)
+endif()
 install(TARGETS r3dss-cli RUNTIME DESTINATION bin)

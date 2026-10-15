@@ -98,6 +98,7 @@ const char* sizePresetName(SizePreset s) {
     case SizePreset::Same: return "same";
     case SizePreset::SixK: return "6K";
     case SizePreset::UHD: return "UHD";
+    case SizePreset::TwoK: return "2K";
     case SizePreset::FHD: return "FHD";
     case SizePreset::Custom: return "custom";
     }
@@ -109,6 +110,7 @@ std::optional<SizePreset> sizePresetFromName(std::string_view s) {
     if (l == "same" || l == "source") return SizePreset::Same;
     if (l == "6k") return SizePreset::SixK;
     if (l == "uhd" || l == "4k") return SizePreset::UHD;
+    if (l == "2k" || l == "dci2k") return SizePreset::TwoK;
     if (l == "fhd" || l == "1080p" || l == "hd") return SizePreset::FHD;
     if (l == "custom") return SizePreset::Custom;
     return std::nullopt;

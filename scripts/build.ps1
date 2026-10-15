@@ -41,10 +41,10 @@ Invoke-Native cmake --preset $preset
 Invoke-Native cmake --build --preset $preset
 if (-not $SkipTests) { Invoke-Native ctest --preset $preset }
 Invoke-Native cmake --install "build\$preset" --prefix dist
-if (-not (Test-Path "dist\bin\Supersampler.exe")) {
+if (-not (Test-Path "dist\bin\r3dss-gui.exe")) {
   throw "GUI was not built: Qt6 Widgets was not found at configure time (QT_ROOT='$env:QT_ROOT'). Run scripts\bootstrap.ps1 or set QT_ROOT and rebuild."
 }
 if (-not (Test-Path "dist\bin\r3dss-cli.exe")) { throw "r3dss-cli.exe missing from dist\bin: the build is incomplete" }
-Compress-Archive -Path dist\* -DestinationPath "Supersampler-win64.zip" -Force
-Write-Host "Portable build: Supersampler-win64.zip (dist\bin\Supersampler.exe)"
+Compress-Archive -Path dist\* -DestinationPath "r3dss-win64.zip" -Force
+Write-Host "Portable build: r3dss-win64.zip (dist\bin\r3dss-gui.exe)"
 if ($Installer) { & (Join-Path $root "scripts\make-installer.ps1"); if ($LASTEXITCODE -ne 0) { throw "installer failed" } }

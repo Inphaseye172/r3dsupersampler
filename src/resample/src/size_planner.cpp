@@ -8,6 +8,7 @@ uint32_t presetWidth(SizePreset p) {
     switch (p) {
     case SizePreset::SixK: return 6048;
     case SizePreset::UHD: return 3840;
+    case SizePreset::TwoK: return 2048;
     case SizePreset::FHD: return 1920;
     default: return 0;
     }

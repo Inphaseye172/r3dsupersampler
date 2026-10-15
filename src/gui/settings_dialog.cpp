@@ -70,12 +70,12 @@ SettingsDialog::SettingsDialog(const AppSettings& s, QWidget* parent) : QDialog(
     tabs->addTab(codecs, "Codec modules");
 
     auto* about = new QLabel(
-        "<h3>Supersampler 0.2</h3>"
-        "<p>Decodes REDCODE RAW (RED KOMODO), Nikon R3D NE and NEV through the RED R3D SDK, resamples to 6K / "
-        "UHD / Full HD and writes CinemaDNG (ProRes and DNxHR follow). CinemaDNG sources are resampled in the "
-        "Bayer domain.</p>"
-        "<p>Decoding needs the RED R3D SDK runtime next to the application (redsdk/); see the Codec modules tab "
-        "and docs/FEASIBILITY.md.</p>"
+        "<h3>r3dss 0.2 (preview, product name not chosen)</h3>"
+        "<p>Goal: genuine camera RAW in, genuine camera RAW out at lower resolution and smaller size, resampled "
+        "in the Bayer domain without debayering.</p>"
+        "<p>This preview converts CinemaDNG mosaics to smaller CinemaDNG mosaics. REDCODE RAW (RED KOMODO), Nikon "
+        "R3D NE and NEV clips are recognised; RAW-to-RAW conversion of those formats is not available (see the "
+        "Codec modules tab and docs/FEASIBILITY.md for the exact blockers).</p>"
         "<p><b>DaVinci Resolve note:</b> half-resolution R3D NE decode can ring near clipped highlights. "
         "Set the decode quality to <i>Full Res Premium</i> in the project or clip Camera RAW settings.</p>",
         this);

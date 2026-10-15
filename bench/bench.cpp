@@ -26,7 +26,7 @@ struct Row { std::string stage; double fps; double extra; std::string note; };
 
 int main(int argc, char** argv) {
     codec::registerBuiltinCodecs();
-    CLI::App app{"Supersampler benchmark"};
+    CLI::App app{"r3dss benchmark"};
     uint32_t w = 8256, h = 4644, frames = 10;
     std::string size = "UHD", jsonOut, tmpDir;
     bool noGpu = false, skipDisk = false;

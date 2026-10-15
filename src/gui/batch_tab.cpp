@@ -36,7 +36,7 @@ BatchTab::BatchTab(const AppSettings& settings, QWidget* parent) : QWidget(paren
     auto* options = new QGroupBox("Output", this);
     auto* form = new QFormLayout(options);
     sizeBox_ = new QComboBox(this);
-    sizeBox_->addItems({"6K (6048 x 3402)", "UHD (3840 x 2160)", "Full HD (1920 x 1080)", "Same resolution (VBR only)"});
+    sizeBox_->addItems({"6K (6048 wide)", "UHD (3840 wide)", "2K DCI (2048 wide)", "Full HD (1920 wide)", "Same resolution (VBR only)"});
     sizeBox_->setCurrentIndex(1);
     containerBox_ = new QComboBox(this);
     containerBox_->addItems({"CinemaDNG", "Keep source container (CinemaDNG sources only)"});
@@ -218,8 +218,8 @@ pipeline::BatchJob BatchTab::buildJob() const {
     job.outputRoot = fs::path(outputEdit_->text().toStdString());
     job.archiveMode = archiveBox_->isChecked();
     settings_.applyTo(job.options);
-    static const SizePreset sizes[] = {SizePreset::SixK, SizePreset::UHD, SizePreset::FHD, SizePreset::Same};
-    job.options.size = sizes[std::clamp(sizeBox_->currentIndex(), 0, 3)];
+    static const SizePreset sizes[] = {SizePreset::SixK, SizePreset::UHD, SizePreset::TwoK, SizePreset::FHD, SizePreset::Same};
+    job.options.size = sizes[std::clamp(sizeBox_->currentIndex(), 0, 4)];
     if (containerBox_->currentIndex() == 0) job.options.outputFormat = codec::Format::CinemaDNG;
     else job.options.outputFormat.reset();
     static const QualityProfile profiles[] = {QualityProfile::Q1_Maximum, QualityProfile::Q3_High, QualityProfile::Q5_Normal,

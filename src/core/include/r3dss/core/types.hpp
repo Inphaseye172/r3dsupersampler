@@ -148,7 +148,8 @@ enum class QualityProfile : uint8_t { Q1_Maximum = 1, Q3_High = 3, Q5_Normal = 5
 const char* qualityProfileName(QualityProfile q);
 std::optional<QualityProfile> qualityProfileFromName(std::string_view s);
 
-enum class SizePreset : uint8_t { Same, SixK, UHD, FHD, Custom };
+// TwoK = DCI 2K (2048 wide), e.g. 6K24 -> 2K24.
+enum class SizePreset : uint8_t { Same, SixK, UHD, TwoK, FHD, Custom };
 const char* sizePresetName(SizePreset s);
 std::optional<SizePreset> sizePresetFromName(std::string_view s);
 

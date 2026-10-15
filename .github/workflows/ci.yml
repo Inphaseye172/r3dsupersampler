@@ -83,7 +83,9 @@ jobs:
           print("probe ok:", j["source"], len(j["chunks"]), "chunks")
           PY
       - name: GUI smoke (offscreen)
-        run: QT_QPA_PLATFORM=offscreen ./build/linux-ci/src/gui/Supersampler --smoke
+        run: QT_QPA_PLATFORM=offscreen ./build/linux-ci/src/gui/r3dss-gui --smoke
+      - name: Acceptance (dev mode; 6K24 -> 2K24 CinemaDNG RAW-to-RAW, sample probe)
+        run: python3 scripts/acceptance.py --bin build/linux-ci/src/cli --mode dev --report acceptance-linux.json
       - name: Benchmark (small)
         run: ./build/linux-ci/bench/r3dss-bench --width 3840 --height 2160 --frames 4 --size FHD --json bench-linux.json
       - uses: actions/upload-artifact@v4
@@ -92,6 +94,7 @@ jobs:
           path: |
             bench-linux.json
             probe-komodo.json
+            acceptance-linux.json
 
   windows:
     name: Windows x64 (MSVC, vcpkg, Qt, installer)
@@ -99,6 +102,11 @@ jobs:
     env:
       VCPKG_ROOT: ${{ github.workspace }}\.deps\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.deps\vcpkg-cache
+      # Tags v* build a production release: CMake refuses to configure unless every advertised
+      # capability (release/capabilities.json), the verified samples and the maintainer's third-party
+      # terms acknowledgement (repository variable R3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED=ON) are present.
+      R3DSS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') && 'ON' || 'OFF' }}
+      R3DSS_TERMS_ACK: ${{ vars.R3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED || 'OFF' }}
     steps:
       - uses: actions/checkout@v4
       - name: Fetch RED R3D SDK (private, optional)
@@ -167,7 +175,8 @@ jobs:
         run: |
           $env:QT_ROOT = $env:QT_ROOT_DIR
           $env:VCPKG_ROOT = "$env:GITHUB_WORKSPACE\.deps\vcpkg"
-          cmake --preset windows-release
+          cmake --preset windows-release -DR3DSS_RELEASE="$env:R3DSS_RELEASE" -DR3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED="$env:R3DSS_TERMS_ACK"
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
       - name: Build
         shell: pwsh
         run: cmake --build --preset windows-release
@@ -183,22 +192,39 @@ jobs:
         shell: pwsh
         run: |
           cmake --install build\windows-release --prefix dist
-          if (-not (Test-Path dist\bin\Supersampler.exe)) { throw "GUI was not built" }
-          Compress-Archive -Path dist\* -DestinationPath Supersampler-win64.zip -Force
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DSourceDir="$PWD\dist" /DAppVersion="0.2.0" installer\supersampler.iss
+          if (-not (Test-Path dist\bin\r3dss-gui.exe)) { throw "GUI was not built" }
+          Compress-Archive -Path dist\* -DestinationPath r3dss-win64.zip -Force
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DSourceDir="$PWD\dist" /DAppVersion="0.2.0" installer\r3dss.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+      - name: Installed acceptance (silent install, then run from the installed location)
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem installer\Output\*.exe | Select-Object -First 1
+          $dir = "C:\r3dss-accept"
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exited $($p.ExitCode)" }
+          if (-not (Test-Path "$dir\bin\r3dss-cli.exe")) { throw "installed r3dss-cli.exe missing" }
+          $mode = if ($env:R3DSS_RELEASE -eq "ON") { "release" } else { "dev" }
+          python scripts/acceptance.py --bin "$dir\bin" --mode $mode --report acceptance-windows.json
+          if ($LASTEXITCODE -ne 0) { throw "installed acceptance failed ($mode)" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-windows
+          path: acceptance-windows.json
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
-          name: Supersampler-win64-portable
-          path: Supersampler-win64.zip
+          name: r3dss-win64-portable
+          path: r3dss-win64.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Supersampler-win64-installer
+          name: r3dss-win64-installer
           path: installer\Output\*.exe
       - name: Release assets
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            Supersampler-win64.zip
+            r3dss-win64.zip
             installer/Output/*.exe

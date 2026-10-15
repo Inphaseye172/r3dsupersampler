@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "comment": "What a release build advertises. scripts/acceptance.py verifies every entry against the INSTALLED binaries; CMake refuses to configure a release (R3DSS_RELEASE=ON) when a requirement is missing. Add a capability here only together with its acceptance check.",
+  "capabilities": [
+    {
+      "id": "cinemadng-raw-to-raw",
+      "description": "CinemaDNG sensor mosaic in, smaller CinemaDNG sensor mosaic out, resampled in the Bayer domain (no debayer), with frame rate, duration, audio and timecode preserved",
+      "modules": [{"format": "CinemaDNG", "read": true, "write": true}],
+      "acceptance": "raw-to-raw-cdng"
+    },
+    {
+      "id": "red-container-identify",
+      "description": "Recognise REDCODE RAW, Nikon R3D NE and NEV clips by content and list their container chunks (no decoding)",
+      "modules": [],
+      "acceptance": "probe-samples"
+    },
+    {
+      "id": "redcode-sdk-decode",
+      "description": "Open REDCODE RAW / R3D NE clips through the RED R3D SDK for identification and verification. This is NOT RAW-to-RAW: the SDK only returns developed RGB (docs/FEASIBILITY.md).",
+      "modules": [{"format": "REDCODE", "read": true, "write": false}],
+      "requires": ["red-sdk"],
+      "acceptance": "module-available"
+    }
+  ],
+  "samples": [
+    {
+      "file": "A060_A027_0912VZ_001.R3D",
+      "sha256": "b03dfab13093fd9bb1878a3af8bddbb81672fbc8256823b7141df42d41ae9a6e",
+      "expect": {
+        "source": "REDCODE RAW (KOMODO 6K)",
+        "chunks": 98,
+        "chunkCounts": {"RED": 1, "RDI": 84, "RDA": 7, "RDX": 1, "RII": 1, "RIA": 1, "RIX": 2, "REO": 1},
+        "headerTimecodes": ["01:19:31:07", "09:02:10:20"]
+      }
+    }
+  ]
+}

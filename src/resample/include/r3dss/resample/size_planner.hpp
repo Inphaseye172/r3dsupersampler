@@ -12,7 +12,7 @@ struct OutputSize {
     bool operator==(const OutputSize&) const = default;
 };
 
-// Width presets: 6K = 6048, UHD = 3840, FHD = 1920. Height keeps the source aspect ratio, is
+// Width presets: 6K = 6048, UHD = 3840, 2K = 2048 (DCI), FHD = 1920. Height keeps the source aspect ratio, is
 // rounded to the nearest multiple of `alignment` (>= 2, even), never upscales.
 Expected<OutputSize> planOutputSize(uint32_t srcW, uint32_t srcH, SizePreset preset, std::optional<OutputSize> custom,
                                     uint32_t alignment = 2);

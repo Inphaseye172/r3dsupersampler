@@ -21,6 +21,42 @@ namespace fs = std::filesystem;
 
 namespace {
 
+const char* moduleStateName(codec::ModuleState s) {
+    switch (s) {
+    case codec::ModuleState::Available: return "available";
+    case codec::ModuleState::MissingSdk: return "missing-sdk";
+    case codec::ModuleState::MissingLicense: return "missing-license";
+    case codec::ModuleState::Stub: return "stub";
+    }
+    return "?";
+}
+
+// Machine-readable module list: what scripts/acceptance.py checks against release/capabilities.json.
+int cmdCodecsJson() {
+    nlohmann::json j;
+    j["version"] = R3DSS_VERSION_STRING;
+#if defined(R3DSS_RELEASE_BUILD)
+    j["release"] = true;
+#else
+    j["release"] = false;
+#endif
+    j["modules"] = nlohmann::json::array();
+    for (const auto& f : codec::CodecRegistry::instance().all()) {
+        const auto st = f->status();
+        const auto c = f->caps();
+        j["modules"].push_back({{"format", codec::formatName(f->format())}, {"name", f->displayName()},
+                                {"read", c.read}, {"write", c.write}, {"rateControl", c.rateControl},
+                                {"lossless", c.lossless}, {"state", moduleStateName(st.state)}, {"status", st.text}});
+    }
+#if defined(R3DSS_HAVE_CUDA)
+    j["cudaDevices"] = resample::cudaDeviceCount();
+#else
+    j["cudaDevices"] = nullptr;
+#endif
+    std::cout << j.dump(2) << "\n";
+    return 0;
+}
+
 int cmdCodecs() {
     for (const auto& f : codec::CodecRegistry::instance().all()) {
         const auto st = f->status();
@@ -142,12 +178,14 @@ int runBatch(const pipeline::BatchJob& job, bool quiet) {
 
 int main(int argc, char** argv) {
     codec::registerBuiltinCodecs();
-    CLI::App app{"Supersampler command line (r3dss-cli)"};
+    CLI::App app{"r3dss command line (preview)"};
     app.require_subcommand(1);
     std::string logLevel = "info";
     app.add_option("--log-level", logLevel, "trace|debug|info|warn|error");
 
+    bool codecsJson = false;
     auto* codecs = app.add_subcommand("codecs", "List codec modules and their status");
+    codecs->add_flag("--json", codecsJson, "machine-readable output");
     std::string probePath;
     bool probeChunks = false;
     auto* probe = app.add_subcommand("probe", "Print clip information as JSON");
@@ -163,7 +201,7 @@ int main(int argc, char** argv) {
     convert->add_option("inputs", inputs, "clip files or CinemaDNG directories");
     convert->add_option("-o,--output", outDir, "output directory");
     convert->add_option("--job", jobFile, "batch job JSON (overrides the other options)");
-    convert->add_option("--size", size, "6K|UHD|FHD|same|WxH");
+    convert->add_option("--size", size, "6K|UHD|2K|FHD|same|WxH");
     convert->add_option("--profile", profile, "Q1|Q3|Q5|Q7");
     convert->add_option("--format,--container", format, "keep|cdng (ProRes / DNxHR arrive in milestone 4)");
     convert->add_option("--kernel", kernel, "lanczos3|area");
@@ -187,7 +225,7 @@ int main(int argc, char** argv) {
     scan->add_flag("--archive", archive, "archive mode: copy non-raw files and verify");
     scan->add_flag("--flat", flat, "do not preserve folder structure");
     scan->add_flag("--run", run, "run the job immediately");
-    scan->add_option("--size", size, "6K|UHD|FHD|same|WxH");
+    scan->add_option("--size", size, "6K|UHD|2K|FHD|same|WxH");
     scan->add_option("--profile", profile, "Q1|Q3|Q5|Q7");
     scan->add_option("--format,--container", format, "keep|cdng");
     scan->add_flag("--no-gpu", noGpu, "force the CPU resampler");
@@ -197,6 +235,7 @@ int main(int argc, char** argv) {
     auto* synthCmd = app.add_subcommand("synth", "Generate a synthetic CinemaDNG clip for testing");
     std::string synthOut, pattern = "scene";
     uint32_t sw = 1920, sh = 1080, frames = 24, channels = 2, seed = 1;
+    std::string synthFps = "25";
     uint16_t bits = 12;
     bool uncompressed = false;
     synthCmd->add_option("output", synthOut, "clip directory to create")->required();
@@ -207,6 +246,7 @@ int main(int argc, char** argv) {
     synthCmd->add_option("--pattern", pattern, "constant|planes|rampx|rampy|zoneplate|impulse|noise|scene");
     synthCmd->add_option("--audio-channels", channels);
     synthCmd->add_option("--seed", seed);
+    synthCmd->add_option("--fps", synthFps, "frame rate, e.g. 24, 25, 24000/1001");
     synthCmd->add_flag("--uncompressed", uncompressed, "write uncompressed DNG instead of lossless JPEG");
 
     CLI11_PARSE(app, argc, argv);
@@ -247,7 +287,7 @@ int main(int argc, char** argv) {
         return true;
     };
 
-    if (codecs->parsed()) return cmdCodecs();
+    if (codecs->parsed()) return codecsJson ? cmdCodecsJson() : cmdCodecs();
     if (probe->parsed()) return cmdProbe(probePath, probeChunks);
     if (synthCmd->parsed()) {
         synth::SynthClipParams p;
@@ -259,6 +299,14 @@ int main(int argc, char** argv) {
         if (!pat) { std::cerr << "bad --pattern\n"; return 1; }
         p.frame.pattern = *pat;
         p.frames = frames;
+        {
+            long long num = 0, den = 1;
+            if (std::sscanf(synthFps.c_str(), "%lld/%lld", &num, &den) < 1 || num <= 0 || den <= 0) {
+                std::cerr << "bad --fps\n";
+                return 1;
+            }
+            p.fps = Rational{num, den};
+        }
         p.audioChannels = channels;
         p.startTimecode = Timecode::parse("01:00:00:00", p.fps);
         p.clipName = fs::path(synthOut).filename().string();
