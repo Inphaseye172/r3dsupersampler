@@ -17,7 +17,8 @@ if (-not $env:VCPKG_ROOT) {
   $vcpkg = Join-Path $deps "vcpkg"
   if (-not (Test-Path (Join-Path $vcpkg "vcpkg.exe"))) {
     Write-Host "== cloning vcpkg into $vcpkg"
-    git clone --depth 1 https://github.com/microsoft/vcpkg $vcpkg
+    git clone https://github.com/microsoft/vcpkg $vcpkg
+    git -C $vcpkg checkout 2026.07.29
     & (Join-Path $vcpkg "bootstrap-vcpkg.bat") -disableMetrics
   }
   $env:VCPKG_ROOT = $vcpkg

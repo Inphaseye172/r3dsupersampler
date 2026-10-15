@@ -59,8 +59,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force .deps\vcpkg-cache | Out-Null
-          git clone --depth 1 https://github.com/microsoft/vcpkg .deps\vcpkg
+          git clone https://github.com/microsoft/vcpkg .deps\vcpkg
+          git -C .deps\vcpkg checkout 2026.07.29
           & .deps\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          choco install ninja -y --no-progress
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -81,6 +83,7 @@ jobs:
         shell: pwsh
         run: |
           $env:QT_ROOT = $env:QT_ROOT_DIR
+          $env:VCPKG_ROOT = "$env:GITHUB_WORKSPACE\.deps\vcpkg"
           cmake --preset windows-release
       - name: Build
         shell: pwsh
