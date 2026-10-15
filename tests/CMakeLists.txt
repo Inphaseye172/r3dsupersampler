@@ -6,6 +6,7 @@ add_executable(r3dss-tests
   test_ljpeg_tiff_wav.cpp
   test_cdng.cpp
   test_pipeline.cpp
+  test_pipeline_safety.cpp
   test_cuda.cpp
   test_red_container.cpp
   test_samples.cpp
