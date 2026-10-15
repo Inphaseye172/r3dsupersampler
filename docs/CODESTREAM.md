@@ -56,3 +56,23 @@ Nikon ZR / Z8 / Z9 / Z6 III:
 
 Release `samples-v1` on GitHub holds the Komodo clip above (shot by the maintainers, CC0, test
 use). Add Nikon clips there as they become available; tests read `R3DSS_SAMPLES`.
+
+## 6. RED R3D SDK check — 2026-10-14
+
+`tools/sdkprobe/probe_decode.cpp` built against **R3D SDK 9.2.1** (Linux x64 static lib
+`libR3DSDKPIC-cpp11.a`, runtime `REDR3D-x64.so` + `REDDecoder-x64.so`) on the Komodo clip:
+
+| Item | Value |
+|---|---|
+| `GetSdkVersion()` | R3DAPI 9.2.1-7058969 (20260608 Lx64S) |
+| Clip | 6144×3240, 84 frames, 24.000 fps, `record_framerate` 24 |
+| Timecode frame 0 | absolute 09:02:10:20, edge 01:19:31:07 |
+| Metadata | `camera_model` KOMODO 6K, `sensor_name` KOMODO S35, `redcode` LQ, `iso` 12800, `white_balance_kelvin` 4400, `audio_format` 0 (integer), 2 audio channels, 79 items |
+| Colour version | min 2, default 3 (IPP2) |
+| Decode | `DECODE_HALF_RES_GOOD`, `PixelType_16Bit_RGB_Interleaved` → 3072×1620, status `DSDecodeOK`; image verified visually |
+
+Source detection for milestone 1 can therefore use SDK metadata directly: Nikon R3D NE reports
+`sensor_name = "NIKON"` and `redcode = "R3D NE"` (per the SDK's "Nikon R3D NE.txt"); Komodo reports
+`sensor_name = "KOMODO S35"`. R3D NE caveats from the same note: no GPU *decompression* (GPU
+image processing is fine), no trim/snapshot, IPP2 only, optional 32-bit float audio, 100/120 fps
+timecode possible.
