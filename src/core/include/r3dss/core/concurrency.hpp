@@ -3,7 +3,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <cstdint>
 #include <functional>
+#include <map>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -13,26 +15,79 @@
 
 namespace r3dss {
 
+class CancelRegistration;
+
+// Cooperative cancellation. cancel() is idempotent and runs every registered callback exactly once,
+// under the token's lock (callbacks must not call back into the same token). Callbacks are
+// registered through onCancel(), which returns an RAII CancelRegistration: destroying it removes the
+// callback, so objects that register `this` can never be called after they are destroyed.
 class CancellationToken {
 public:
+    using CallbackId = uint64_t;
+
     void cancel() {
-        cancelled_.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lk(m_);
-        for (auto& cb : callbacks_) cb();
+        if (cancelled_.exchange(true, std::memory_order_acq_rel)) return;
+        for (auto& [id, cb] : callbacks_) cb();
+        callbacks_.clear();
     }
     bool isCancelled() const { return cancelled_.load(std::memory_order_acquire); }
-    // Registers a callback invoked once on cancel (used by queues to wake sleepers).
-    void onCancel(std::function<void()> cb) {
+
+    // Runs `cb` once on cancel (immediately, synchronously, if already cancelled). The returned
+    // registration must not outlive this token.
+    [[nodiscard]] CancelRegistration onCancel(std::function<void()> cb);
+
+    size_t callbackCount() const { std::lock_guard<std::mutex> lk(m_); return callbacks_.size(); }
+
+private:
+    friend class CancelRegistration;
+    void remove(CallbackId id) {
         std::lock_guard<std::mutex> lk(m_);
-        if (cancelled_) cb();
-        callbacks_.push_back(std::move(cb));
+        callbacks_.erase(id);
+    }
+    std::atomic<bool> cancelled_{false};
+    mutable std::mutex m_;
+    CallbackId nextId_ = 0;
+    std::map<CallbackId, std::function<void()>> callbacks_;
+};
+
+class CancelRegistration {
+public:
+    CancelRegistration() = default;
+    CancelRegistration(CancellationToken* token, CancellationToken::CallbackId id) : token_(token), id_(id) {}
+    CancelRegistration(const CancelRegistration&) = delete;
+    CancelRegistration& operator=(const CancelRegistration&) = delete;
+    CancelRegistration(CancelRegistration&& o) noexcept : token_(o.token_), id_(o.id_) { o.token_ = nullptr; }
+    CancelRegistration& operator=(CancelRegistration&& o) noexcept {
+        if (this != &o) {
+            reset();
+            token_ = o.token_;
+            id_ = o.id_;
+            o.token_ = nullptr;
+        }
+        return *this;
+    }
+    ~CancelRegistration() { reset(); }
+    void reset() {
+        if (token_) token_->remove(id_);
+        token_ = nullptr;
     }
 
 private:
-    std::atomic<bool> cancelled_{false};
-    std::mutex m_;
-    std::vector<std::function<void()>> callbacks_;
+    CancellationToken* token_ = nullptr;
+    CancellationToken::CallbackId id_ = 0;
 };
+
+inline CancelRegistration CancellationToken::onCancel(std::function<void()> cb) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (cancelled_.load(std::memory_order_acquire)) {
+        cb();
+        return {};
+    }
+    const CallbackId id = ++nextId_;
+    callbacks_.emplace(id, std::move(cb));
+    return CancelRegistration(this, id);
+}
 
 // Bounded multi-producer / multi-consumer queue. push() blocks when full (backpressure);
 // pop() blocks when empty. Both return false on cancellation or after close() drains.
@@ -40,8 +95,10 @@ template <class T> class BoundedQueue {
 public:
     explicit BoundedQueue(size_t capacity, std::shared_ptr<CancellationToken> token = nullptr)
         : cap_(capacity ? capacity : 1), token_(std::move(token)) {
-        if (token_) token_->onCancel([this] { notifyAll(); });
+        if (token_) reg_ = token_->onCancel([this] { notifyAll(); });
     }
+    BoundedQueue(const BoundedQueue&) = delete;
+    BoundedQueue& operator=(const BoundedQueue&) = delete;
 
     bool push(T item) {
         std::unique_lock<std::mutex> lk(m_);
@@ -84,6 +141,7 @@ private:
     size_t cap_;
     bool closed_ = false;
     std::shared_ptr<CancellationToken> token_;
+    CancelRegistration reg_; // declared after token_: unregistered before the token reference is dropped
 };
 
 class ThreadPool {
@@ -168,13 +226,19 @@ public:
     void pause() { std::lock_guard<std::mutex> lk(m_); paused_ = true; }
     void resume() { { std::lock_guard<std::mutex> lk(m_); paused_ = false; } cv_.notify_all(); }
     bool paused() const { std::lock_guard<std::mutex> lk(m_); return paused_; }
-    // Blocks while paused; returns false if the token was cancelled meanwhile.
-    bool wait(const CancellationToken* token = nullptr) {
+    // Blocks while paused; returns false if `token` is (or becomes) cancelled. Cancelling the token
+    // wakes the waiter even if nobody calls resume().
+    bool wait(CancellationToken* token = nullptr) {
+        CancelRegistration reg;
+        if (token) reg = token->onCancel([this] {
+            std::lock_guard<std::mutex> lk(m_);
+            cv_.notify_all();
+        });
         std::unique_lock<std::mutex> lk(m_);
         cv_.wait(lk, [&] { return !paused_ || (token && token->isCancelled()); });
         return !(token && token->isCancelled());
     }
-    void wakeForCancel() { cv_.notify_all(); }
+    void wakeForCancel() { std::lock_guard<std::mutex> lk(m_); cv_.notify_all(); }
 
 private:
     mutable std::mutex m_;

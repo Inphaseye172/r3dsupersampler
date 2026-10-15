@@ -1,4 +1,5 @@
 #include "r3dss/codec/memory_codec.hpp"
+#include "r3dss/core/paths.hpp"
 #include <algorithm>
 #include <cstring>
 
@@ -35,7 +36,7 @@ class MemoryReader final : public ICodecReader {
 public:
     Expected<ClipInfo> open(const std::filesystem::path& path) override {
         clip_ = MemoryStore::instance().get(MemoryStore::nameOf(path));
-        if (!clip_) return makeError(ErrorCode::Io, "memory clip not found: " + path.string());
+        if (!clip_) return makeError(ErrorCode::Io, "memory clip not found: " + toUtf8(path));
         return clip_->info;
     }
     const ClipInfo& info() const override { return clip_->info; }

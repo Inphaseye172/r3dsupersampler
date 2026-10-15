@@ -1,4 +1,5 @@
 #include "r3dss/pipeline/clip_converter.hpp"
+#include "r3dss/core/paths.hpp"
 #include <atomic>
 #include <map>
 #include <mutex>
@@ -57,7 +58,7 @@ struct Item {
 class OrderedBuffer {
 public:
     OrderedBuffer(size_t cap, std::shared_ptr<CancellationToken> tok) : cap_(cap), tok_(std::move(tok)) {
-        tok_->onCancel([this] { std::lock_guard<std::mutex> lk(m_); cv_.notify_all(); });
+        reg_ = tok_->onCancel([this] { std::lock_guard<std::mutex> lk(m_); cv_.notify_all(); });
     }
     bool push(int64_t idx, Item it) {
         std::unique_lock<std::mutex> lk(m_);
@@ -85,6 +86,7 @@ private:
     size_t cap_;
     int64_t next_ = 0;
     std::shared_ptr<CancellationToken> tok_;
+    CancelRegistration reg_; // unregistered before tok_ is released
 };
 
 struct ErrorSlot {
@@ -118,7 +120,7 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
     report({0, 0, 0, "probing"});
     auto& reg = codec::CodecRegistry::instance();
     auto inFactory = reg.probe(job.source);
-    if (!inFactory) return failWith(ClipStatus::Failed, "not a recognised raw clip: " + job.source.string());
+    if (!inFactory) return failWith(ClipStatus::Failed, "not a recognised raw clip: " + toUtf8(job.source));
     if (!inFactory->caps().read)
         return failWith(ClipStatus::Failed, inFactory->displayName() + " cannot be decoded: " + inFactory->status().text);
     auto reader = inFactory->makeReader();
@@ -145,15 +147,15 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
     res.outWidth = outSize.width;
     res.outHeight = outSize.height;
 
-    const std::string stem = fs::is_directory(job.source) ? job.source.filename().string() : job.source.stem().string();
+    const std::string stem = fs::is_directory(job.source) ? toUtf8(job.source.filename()) : toUtf8(job.source.stem());
     const std::string name = job.outputName.empty() ? expandName(options.namingTemplate, stem, options, outFmt) : job.outputName;
-    fs::path dest = job.outputDir / name;
+    fs::path dest = job.outputDir / fromUtf8(name);
     if (outFmt != codec::Format::CinemaDNG && outFmt != codec::Format::Memory) dest += codec::formatExtension(outFmt);
-    if (outFmt == codec::Format::Memory) dest = fs::path("mem://" + name);
+    if (outFmt == codec::Format::Memory) dest = fromUtf8("mem://" + name);
     res.output = dest;
     std::error_code ec;
     if (outFmt != codec::Format::Memory && fs::exists(dest, ec)) {
-        if (!options.overwrite) return failWith(ClipStatus::Skipped, "output already exists: " + dest.string());
+        if (!options.overwrite) return failWith(ClipStatus::Skipped, "output already exists: " + toUtf8(dest));
         fs::remove_all(dest, ec);
     }
     if (outFmt != codec::Format::Memory) fs::create_directories(job.outputDir, ec);

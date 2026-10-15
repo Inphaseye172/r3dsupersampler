@@ -7,6 +7,7 @@ qt_add_executable(r3dss-gui WIN32
   batch_tab.hpp batch_tab.cpp
   settings_dialog.hpp settings_dialog.cpp
   main_window.hpp main_window.cpp
+  qt_paths.hpp
 )
 target_link_libraries(r3dss-gui PRIVATE r3dss::pipeline r3dss::synth Qt6::Widgets)
 # Product name not chosen yet (docs/IMPLEMENTATION_PLAN.md D7): neutral binary name.

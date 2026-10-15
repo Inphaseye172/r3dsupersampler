@@ -1,4 +1,5 @@
 #include "r3dss/pipeline/job.hpp"
+#include "r3dss/core/paths.hpp"
 #include <fstream>
 #include <nlohmann/json.hpp>
 
@@ -66,18 +67,18 @@ Expected<JobOptions> optionsFromJson(const json& j) {
 std::string batchJobToJson(const BatchJob& b) {
     json j;
     j["name"] = b.name;
-    j["outputRoot"] = b.outputRoot.generic_string();
+    j["outputRoot"] = toUtf8Generic(b.outputRoot);
     j["archiveMode"] = b.archiveMode;
     j["options"] = optionsToJson(b.options);
     j["clips"] = json::array();
     for (const auto& c : b.clips)
-        j["clips"].push_back({{"source", c.source.generic_string()},
-                              {"outputDir", c.outputDir.generic_string()},
+        j["clips"].push_back({{"source", toUtf8Generic(c.source)},
+                              {"outputDir", toUtf8Generic(c.outputDir)},
                               {"outputName", c.outputName},
-                              {"relativeDir", c.relativeDir.generic_string()}});
+                              {"relativeDir", toUtf8Generic(c.relativeDir)}});
     j["copies"] = json::array();
-    for (const auto& c : b.copies) j["copies"].push_back({{"source", c.source.generic_string()}, {"dest", c.dest.generic_string()}});
-    return j.dump(2);
+    for (const auto& c : b.copies) j["copies"].push_back({{"source", toUtf8Generic(c.source)}, {"dest", toUtf8Generic(c.dest)}});
+    return j.dump(2, ' ', false, json::error_handler_t::replace);
 }
 
 Expected<BatchJob> batchJobFromJson(const std::string& text) {
@@ -90,7 +91,7 @@ Expected<BatchJob> batchJobFromJson(const std::string& text) {
     try {
         BatchJob b;
         b.name = j.value("name", "batch");
-        b.outputRoot = j.value("outputRoot", "");
+        b.outputRoot = fromUtf8(j.value("outputRoot", ""));
         b.archiveMode = j.value("archiveMode", false);
         if (j.contains("options")) {
             R3DSS_TRY_ASSIGN(o, optionsFromJson(j["options"]));
@@ -98,13 +99,13 @@ Expected<BatchJob> batchJobFromJson(const std::string& text) {
         }
         for (const auto& c : j.value("clips", json::array())) {
             ClipJob cj;
-            cj.source = c.value("source", "");
-            cj.outputDir = c.value("outputDir", "");
+            cj.source = fromUtf8(c.value("source", ""));
+            cj.outputDir = fromUtf8(c.value("outputDir", ""));
             cj.outputName = c.value("outputName", "");
-            cj.relativeDir = c.value("relativeDir", "");
+            cj.relativeDir = fromUtf8(c.value("relativeDir", ""));
             b.clips.push_back(cj);
         }
-        for (const auto& c : j.value("copies", json::array())) b.copies.push_back({c.value("source", ""), c.value("dest", "")});
+        for (const auto& c : j.value("copies", json::array())) b.copies.push_back({fromUtf8(c.value("source", "")), fromUtf8(c.value("dest", ""))});
         return b;
     } catch (const std::exception& e) {
         return makeError(ErrorCode::Format, std::string("invalid job JSON: ") + e.what());
@@ -113,14 +114,14 @@ Expected<BatchJob> batchJobFromJson(const std::string& text) {
 
 Expected<BatchJob> loadBatchJob(const std::filesystem::path& p) {
     std::ifstream in(p);
-    if (!in) return makeError(ErrorCode::Io, "cannot open " + p.string());
+    if (!in) return makeError(ErrorCode::Io, "cannot open " + toUtf8(p));
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     return batchJobFromJson(text);
 }
 
 Expected<void> saveBatchJob(const BatchJob& b, const std::filesystem::path& p) {
     std::ofstream out(p);
-    if (!out) return makeError(ErrorCode::Io, "cannot create " + p.string());
+    if (!out) return makeError(ErrorCode::Io, "cannot create " + toUtf8(p));
     out << batchJobToJson(b);
     return {};
 }

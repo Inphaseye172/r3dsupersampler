@@ -5,6 +5,7 @@
 #include <thread>
 #include "r3dss/codec/memory_codec.hpp"
 #include "r3dss/codec_cdng/cdng_codec.hpp"
+#include "r3dss/core/paths.hpp"
 #include "r3dss/resample/resampler.hpp"
 #include "r3dss/pipeline/archive_copier.hpp"
 #include "r3dss/pipeline/folder_scanner.hpp"
@@ -202,4 +203,33 @@ TEST_CASE("Cancellation stops a running clip") {
     ctx.progress = [&](const ClipProgress& pr) { if (pr.framesDone >= 2) ctx.cancel->cancel(); };
     ClipResult r = convertClip(job, o, ctx);
     REQUIRE(r.status == ClipStatus::Cancelled);
+}
+
+TEST_CASE("Non-ASCII folder and clip names convert end to end and survive job JSON") {
+    const fs::path dir = tmpDir("utf8");
+    const fs::path clipDir = dir / fromUtf8("Drehtag \xC3\x84") / fromUtf8("\xE6\x92\xAE\xE5\xBD\xB1_A001");
+    synth::SynthClipParams p;
+    p.frame.width = 128;
+    p.frame.height = 72;
+    p.frames = 2;
+    p.audioChannels = 1;
+    p.clipName = toUtf8(clipDir.filename());
+    REQUIRE(synth::writeSyntheticClip(clipDir, p));
+    BatchJob b;
+    b.name = "utf8";
+    b.outputRoot = dir / fromUtf8("Ausgabe \xC3\x9C");
+    b.options.size = SizePreset::Custom;
+    b.options.customSize = resample::OutputSize{64, 36};
+    b.clips.push_back({clipDir, b.outputRoot, "", ""});
+    REQUIRE(saveBatchJob(b, dir / fromUtf8("job \xC3\xA9.json")));
+    auto loaded = loadBatchJob(dir / fromUtf8("job \xC3\xA9.json"));
+    REQUIRE(loaded);
+    REQUIRE(loaded->clips.at(0).source == clipDir);
+    REQUIRE(loaded->outputRoot == b.outputRoot);
+    Scheduler s;
+    BatchResult res = s.run(*loaded, {});
+    REQUIRE(res.done == 1);
+    const fs::path out = b.outputRoot / fromUtf8("\xE6\x92\xAE\xE5\xBD\xB1_A001_custom_Q5");
+    REQUIRE(codec::listDngFrames(out).size() == 2);
+    REQUIRE(fs::exists(out / fromUtf8("\xE6\x92\xAE\xE5\xBD\xB1_A001_custom_Q5.wav")));
 }

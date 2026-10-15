@@ -1,4 +1,5 @@
 #include "r3dss/pipeline/folder_scanner.hpp"
+#include "r3dss/core/paths.hpp"
 #include <algorithm>
 #include "r3dss/codec_cdng/cdng_codec.hpp"
 
@@ -45,7 +46,7 @@ void scanDir(const fs::path& dir, const fs::path& root, const fs::path& outRoot,
 
 Expected<ScanResult> scanFolder(const fs::path& root, const fs::path& outputRoot, const ScanOptions& opts) {
     std::error_code ec;
-    if (!fs::is_directory(root, ec)) return makeError(ErrorCode::InvalidArgument, "not a directory: " + root.string());
+    if (!fs::is_directory(root, ec)) return makeError(ErrorCode::InvalidArgument, "not a directory: " + toUtf8(root));
     ScanResult res;
     if (!codec::listDngFrames(root).empty()) {
         ClipJob cj;

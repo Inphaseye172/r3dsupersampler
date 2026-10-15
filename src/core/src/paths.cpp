@@ -7,6 +7,20 @@
 
 namespace r3dss {
 
+std::string toUtf8(const std::filesystem::path& p) {
+    const std::u8string u = p.u8string();
+    return std::string(reinterpret_cast<const char*>(u.data()), u.size());
+}
+
+std::string toUtf8Generic(const std::filesystem::path& p) {
+    const std::u8string u = p.generic_u8string();
+    return std::string(reinterpret_cast<const char*>(u.data()), u.size());
+}
+
+std::filesystem::path fromUtf8(std::string_view utf8) {
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size()));
+}
+
 std::filesystem::path executableDir() {
 #ifdef _WIN32
     wchar_t buf[MAX_PATH * 4];

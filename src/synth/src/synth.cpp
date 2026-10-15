@@ -5,6 +5,7 @@
 #include <random>
 #include "r3dss/codec/memory_codec.hpp"
 #include "r3dss/codec_cdng/cdng_codec.hpp"
+#include "r3dss/core/paths.hpp"
 
 namespace r3dss::synth {
 
@@ -186,7 +187,7 @@ Expected<codec::ClipInfo> makeMemoryClip(const std::string& name, const SynthCli
     auto factory = codec::makeMemoryCodecFactory();
     auto writer = factory->makeWriter();
     auto reader = factory->makeReader();
-    const std::filesystem::path path("mem://" + name);
+    const std::filesystem::path path = fromUtf8("mem://" + name);
     return writeWith(*writer, configFor(p, path), p, *reader, path);
 }
 

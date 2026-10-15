@@ -1,4 +1,5 @@
 #include "r3dss/pipeline/scheduler.hpp"
+#include "r3dss/core/paths.hpp"
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -42,12 +43,13 @@ BatchResult Scheduler::run(const BatchJob& job, const BatchCallbacks& cb) {
             if (cb.onClipStart) cb.onClipStart(i);
             ClipRunContext ctx;
             ctx.cancel = std::make_shared<CancellationToken>();
-            cancel_->onCancel([tok = ctx.cancel] { tok->cancel(); });
+            // Scoped link: removed when this clip ends, so batch-level callbacks never accumulate.
+            CancelRegistration link = cancel_->onCancel([tok = ctx.cancel] { tok->cancel(); });
             ctx.pause = pause_;
             ctx.plan = perClip;
             ctx.progress = [&, i](const ClipProgress& p) { if (cb.onClipProgress) cb.onClipProgress(i, p); };
             ClipResult r = convertClip(job.clips[i], job.options, ctx);
-            R3DSS_LOG_INFO("scheduler", job.clips[i].source.filename().string() + ": " + clipStatusName(r.status) + " (" + r.message + ")");
+            R3DSS_LOG_INFO("scheduler", toUtf8(job.clips[i].source.filename()) + ": " + clipStatusName(r.status) + " (" + r.message + ")");
             {
                 std::lock_guard<std::mutex> lk(resMutex);
                 result.clips[i] = r;
@@ -67,7 +69,7 @@ BatchResult Scheduler::run(const BatchJob& job, const BatchCallbacks& cb) {
             {
                 std::lock_guard<std::mutex> lk(resMutex);
                 if (r) result.copies.push_back(*r);
-                else result.copyErrors.push_back(job.copies[i].source.string() + ": " + r.error().toString());
+                else result.copyErrors.push_back(toUtf8(job.copies[i].source) + ": " + r.error().toString());
             }
             if (cb.onCopyDone) cb.onCopyDone(i, r);
         }

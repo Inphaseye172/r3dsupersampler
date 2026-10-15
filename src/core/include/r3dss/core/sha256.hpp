@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include "r3dss/core/concurrency.hpp"
 #include "r3dss/core/expected.hpp"
 
 namespace r3dss {
@@ -16,7 +17,8 @@ public:
     std::array<uint8_t, 32> finish();
     static std::string hex(const std::array<uint8_t, 32>& digest);
     static std::string hashBytes(const void* data, size_t len);
-    static Expected<std::string> hashFile(const std::filesystem::path& p);
+    // Hashes a file; returns ErrorCode::Cancelled if `cancel` fires, ErrorCode::Io on any read error.
+    static Expected<std::string> hashFile(const std::filesystem::path& p, const CancellationToken* cancel = nullptr);
 
 private:
     void block(const uint8_t* p);

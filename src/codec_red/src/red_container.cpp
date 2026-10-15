@@ -1,4 +1,5 @@
 #include "r3dss/codec_red/red_container.hpp"
+#include "r3dss/core/paths.hpp"
 #include <fstream>
 
 namespace r3dss::codec::red {
@@ -32,7 +33,7 @@ bool looksLikeRedContainer(const std::filesystem::path& path) {
 
 Expected<std::vector<Chunk>> listChunks(const std::filesystem::path& path, size_t maxChunks) {
     std::ifstream in(path, std::ios::binary);
-    if (!in) return makeError(ErrorCode::Io, "cannot open " + path.string());
+    if (!in) return makeError(ErrorCode::Io, "cannot open " + toUtf8(path));
     in.seekg(0, std::ios::end);
     const uint64_t fileSize = static_cast<uint64_t>(in.tellg());
     std::vector<Chunk> out;
@@ -57,7 +58,7 @@ Expected<std::vector<Chunk>> listChunks(const std::filesystem::path& path, size_
         off = alignUp(off + c.size);
     }
     if (out.empty() || out.front().tag != kTagHeader)
-        return makeError(ErrorCode::Format, "no RED container header in " + path.string());
+        return makeError(ErrorCode::Format, "no RED container header in " + toUtf8(path));
     return out;
 }
 
@@ -76,12 +77,12 @@ std::map<std::string, ChunkStats> chunkHistogram(const std::vector<Chunk>& chunk
 
 Expected<std::vector<std::string>> readHeaderStrings(const std::filesystem::path& path, size_t minLen) {
     std::ifstream in(path, std::ios::binary);
-    if (!in) return makeError(ErrorCode::Io, "cannot open " + path.string());
+    if (!in) return makeError(ErrorCode::Io, "cannot open " + toUtf8(path));
     unsigned char hdr[8];
     in.read(reinterpret_cast<char*>(hdr), 8);
     Chunk c;
     if (in.gcount() != 8 || !parseHeader(hdr, c) || c.tag != kTagHeader)
-        return makeError(ErrorCode::Format, "no RED container header in " + path.string());
+        return makeError(ErrorCode::Format, "no RED container header in " + toUtf8(path));
     std::vector<unsigned char> body(static_cast<size_t>(std::min<uint64_t>(c.size, 1u << 20)));
     in.seekg(0);
     in.read(reinterpret_cast<char*>(body.data()), static_cast<std::streamsize>(body.size()));

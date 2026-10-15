@@ -1,4 +1,5 @@
 #include "r3dss/codec_cdng/tiff.hpp"
+#include "r3dss/core/paths.hpp"
 #include <cstring>
 #include <fstream>
 
@@ -8,7 +9,7 @@ uint32_t typeSize(Type t) {
     switch (t) {
     case Type::Byte: case Type::Ascii: case Type::SByte: case Type::Undefined: return 1;
     case Type::Short: case Type::SShort: return 2;
-    case Type::Long: case Type::SLong: case Type::Float: return 4;
+    case Type::Long: case Type::SLong: case Type::Float: case Type::Ifd: return 4;
     case Type::Rational: case Type::SRational: case Type::Double: return 8;
     }
     return 1;
@@ -31,7 +32,7 @@ std::optional<uint32_t> Entry::u32(uint32_t i) const {
     switch (type) {
     case Type::Byte: case Type::Undefined: case Type::SByte: return *p;
     case Type::Short: case Type::SShort: return rd16(p, bigEndian);
-    case Type::Long: case Type::SLong: return rd32(p, bigEndian);
+    case Type::Long: case Type::SLong: case Type::Ifd: return rd32(p, bigEndian);
     default: return std::nullopt;
     }
 }
@@ -90,17 +91,17 @@ std::string Entry::ascii() const {
 
 Expected<void> Reader::open(const std::filesystem::path& p) {
     std::ifstream in(p, std::ios::binary);
-    if (!in) return makeError(ErrorCode::Io, "cannot open " + p.string());
+    if (!in) return makeError(ErrorCode::Io, "cannot open " + toUtf8(p));
     in.seekg(0, std::ios::end);
     const auto size = in.tellg();
     in.seekg(0);
     buf_.resize(static_cast<size_t>(size));
     in.read(reinterpret_cast<char*>(buf_.data()), size);
-    if (buf_.size() < 8) return makeError(ErrorCode::Format, "file too small for TIFF: " + p.string());
+    if (buf_.size() < 8) return makeError(ErrorCode::Format, "file too small for TIFF: " + toUtf8(p));
     if (buf_[0] == 'I' && buf_[1] == 'I') big_ = false;
     else if (buf_[0] == 'M' && buf_[1] == 'M') big_ = true;
-    else return makeError(ErrorCode::Format, "not a TIFF/DNG file: " + p.string());
-    if (u16At(2) != 42) return makeError(ErrorCode::Format, "bad TIFF magic: " + p.string());
+    else return makeError(ErrorCode::Format, "not a TIFF/DNG file: " + toUtf8(p));
+    if (u16At(2) != 42) return makeError(ErrorCode::Format, "bad TIFF magic: " + toUtf8(p));
     first_ = u32At(4);
     return {};
 }
@@ -199,9 +200,9 @@ void Writer::setFirstIfd(uint64_t off) { put32(buf_, 4, static_cast<uint32_t>(of
 
 Expected<void> Writer::save(const std::filesystem::path& p) const {
     std::ofstream out(p, std::ios::binary | std::ios::trunc);
-    if (!out) return makeError(ErrorCode::Io, "cannot create " + p.string());
+    if (!out) return makeError(ErrorCode::Io, "cannot create " + toUtf8(p));
     out.write(reinterpret_cast<const char*>(buf_.data()), static_cast<std::streamsize>(buf_.size()));
-    if (!out) return makeError(ErrorCode::Io, "write failed: " + p.string());
+    if (!out) return makeError(ErrorCode::Io, "write failed: " + toUtf8(p));
     return {};
 }
 

@@ -6,6 +6,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include "r3dss/codec/codec.hpp"
+#include "r3dss/core/paths.hpp"
 #include "r3dss/codec_red/red_container.hpp"
 #include "r3dss/core/hardware.hpp"
 #include "r3dss/core/logger.hpp"
@@ -78,7 +79,7 @@ int cmdCodecs() {
     return 0;
 }
 
-int cmdProbe(const std::string& path, bool chunks) {
+int cmdProbe(const fs::path& path, bool chunks) {
     auto f = codec::CodecRegistry::instance().probe(path);
     if (!f) {
         std::cerr << "not a recognised raw clip: " << path << "\n";
@@ -143,7 +144,7 @@ int runBatch(const pipeline::BatchJob& job, bool quiet) {
     std::mutex outMutex;
     cb.onClipStart = [&](size_t i) {
         std::lock_guard<std::mutex> lk(outMutex);
-        if (!quiet) std::cout << "[" << i + 1 << "/" << job.clips.size() << "] " << job.clips[i].source.string() << "\n";
+        if (!quiet) std::cout << "[" << i + 1 << "/" << job.clips.size() << "] " << toUtf8(job.clips[i].source) << "\n";
     };
     cb.onClipProgress = [&](size_t i, const pipeline::ClipProgress& p) {
         if (quiet || p.totalFrames == 0) return;
@@ -163,14 +164,14 @@ int runBatch(const pipeline::BatchJob& job, bool quiet) {
     };
     cb.onCopyDone = [&](size_t, const Expected<pipeline::CopyResult>& r) {
         std::lock_guard<std::mutex> lk(outMutex);
-        if (r) std::cout << "  copied " << r->dest.string() << " (" << r->sha256.substr(0, 12) << ", verified)\n";
+        if (r) std::cout << "  copied " << toUtf8(r->dest) << " (" << r->sha256.substr(0, 12) << ", verified)\n";
         else std::cout << "  copy failed: " << r.error().toString() << "\n";
     };
     const auto res = sched.run(job, cb);
     std::cout << "batch '" << job.name << "': " << res.done << " done, " << res.failed << " failed, " << res.skipped
               << " skipped, " << res.cancelled << " cancelled, " << res.copies.size() << " copied, " << std::setprecision(1)
               << res.seconds << " s\n";
-    if (!res.manifest.empty()) std::cout << "manifest: " << res.manifest.string() << "\n";
+    if (!res.manifest.empty()) std::cout << "manifest: " << toUtf8(res.manifest) << "\n";
     return (res.failed || !res.copyErrors.empty()) ? 1 : 0;
 }
 
@@ -249,6 +250,9 @@ int main(int argc, char** argv) {
     synthCmd->add_option("--fps", synthFps, "frame rate, e.g. 24, 25, 24000/1001");
     synthCmd->add_flag("--uncompressed", uncompressed, "write uncompressed DNG instead of lossless JPEG");
 
+    // Windows hands main() ANSI-encoded argv; CLI11 re-reads the wide command line so every
+    // argument below is UTF-8 on all platforms (paths are then built with fromUtf8).
+    argv = app.ensure_utf8(argv);
     CLI11_PARSE(app, argc, argv);
 
     auto& logger = Logger::instance();
@@ -288,7 +292,7 @@ int main(int argc, char** argv) {
     };
 
     if (codecs->parsed()) return codecsJson ? cmdCodecsJson() : cmdCodecs();
-    if (probe->parsed()) return cmdProbe(probePath, probeChunks);
+    if (probe->parsed()) return cmdProbe(fromUtf8(probePath), probeChunks);
     if (synthCmd->parsed()) {
         synth::SynthClipParams p;
         p.frame.width = sw;
@@ -309,9 +313,9 @@ int main(int argc, char** argv) {
         }
         p.audioChannels = channels;
         p.startTimecode = Timecode::parse("01:00:00:00", p.fps);
-        p.clipName = fs::path(synthOut).filename().string();
+        p.clipName = toUtf8(fromUtf8(synthOut).filename());
         p.losslessJpeg = !uncompressed;
-        auto r = synth::writeSyntheticClip(synthOut, p);
+        auto r = synth::writeSyntheticClip(fromUtf8(synthOut), p);
         if (!r) { std::cerr << r.error().toString() << "\n"; return 1; }
         std::cout << "wrote " << r->frameCount << " frames " << r->width << "x" << r->height << " to " << synthOut << "\n";
         return 0;
@@ -319,15 +323,15 @@ int main(int argc, char** argv) {
     if (convert->parsed()) {
         pipeline::BatchJob job;
         if (!jobFile.empty()) {
-            auto j = pipeline::loadBatchJob(jobFile);
+            auto j = pipeline::loadBatchJob(fromUtf8(jobFile));
             if (!j) { std::cerr << j.error().toString() << "\n"; return 1; }
             job = *j;
         } else {
             if (inputs.empty() || outDir.empty()) { std::cerr << "need inputs and -o, or --job\n"; return 1; }
             job.name = "cli";
-            job.outputRoot = outDir;
+            job.outputRoot = fromUtf8(outDir);
             if (!parseOptions(job.options)) return 1;
-            for (const auto& in : inputs) job.clips.push_back({fs::path(in), fs::path(outDir), "", ""});
+            for (const auto& in : inputs) job.clips.push_back({fromUtf8(in), fromUtf8(outDir), "", ""});
         }
         return runBatch(job, quiet);
     }
@@ -336,18 +340,18 @@ int main(int argc, char** argv) {
         so.recursive = recursive;
         so.archiveMode = archive;
         so.preserveStructure = !flat;
-        auto res = pipeline::scanFolder(scanRoot, scanOut, so);
+        auto res = pipeline::scanFolder(fromUtf8(scanRoot), fromUtf8(scanOut), so);
         if (!res) { std::cerr << res.error().toString() << "\n"; return 1; }
         pipeline::BatchJob job;
-        job.name = fs::path(scanRoot).filename().string();
-        job.outputRoot = scanOut;
+        job.name = toUtf8(fromUtf8(scanRoot).filename());
+        job.outputRoot = fromUtf8(scanOut);
         job.archiveMode = archive;
         if (!parseOptions(job.options)) return 1;
         job.clips = res->clips;
         job.copies = res->copies;
         std::cout << "found " << job.clips.size() << " clips and " << job.copies.size() << " files to copy\n";
         if (!writeJob.empty()) {
-            if (auto s = pipeline::saveBatchJob(job, writeJob); !s) { std::cerr << s.error().toString() << "\n"; return 1; }
+            if (auto s = pipeline::saveBatchJob(job, fromUtf8(writeJob)); !s) { std::cerr << s.error().toString() << "\n"; return 1; }
             std::cout << "wrote " << writeJob << "\n";
         } else if (!run) {
             std::cout << pipeline::batchJobToJson(job) << "\n";

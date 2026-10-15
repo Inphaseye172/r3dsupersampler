@@ -1,4 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
+#include <atomic>
+#include <chrono>
 #include <thread>
 #include "r3dss/core/concurrency.hpp"
 #include "r3dss/core/expected.hpp"
@@ -101,4 +103,57 @@ TEST_CASE("Thread plan follows hardware policy") {
     hw.totalRamBytes = 1ull << 30; // tiny RAM limits clips to 1
     REQUIRE(planThreads(hw, 8256ull * 4644 * 2).parallelClips == 1);
     REQUIRE(planThreads(hw, 0, 3).parallelClips == 3);
+}
+
+#include "r3dss/core/paths.hpp"
+
+TEST_CASE("UTF-8 path helpers round-trip non-ASCII names") {
+    const std::string name = "Drehtag \xC3\x84 / \xE6\x92\xAE\xE5\xBD\xB1 \xF0\x9F\x8E\xAC"; // "Drehtag Ä / 撮影 🎬"
+    const std::filesystem::path p = fromUtf8("root") / fromUtf8("Drehtag \xC3\x84") / fromUtf8("\xE6\x92\xAE\xE5\xBD\xB1.dng");
+    REQUIRE(toUtf8(p.filename()) == "\xE6\x92\xAE\xE5\xBD\xB1.dng");
+    REQUIRE(toUtf8(fromUtf8(name)) == name);
+    REQUIRE(toUtf8Generic(p) == "root/Drehtag \xC3\x84/\xE6\x92\xAE\xE5\xBD\xB1.dng");
+    REQUIRE(fromUtf8(toUtf8(p)) == p);
+}
+
+TEST_CASE("Cancel registrations unregister on destruction; cancel is idempotent") {
+    auto tok = std::make_shared<CancellationToken>();
+    int calls = 0;
+    {
+        CancelRegistration r = tok->onCancel([&] { ++calls; });
+        REQUIRE(tok->callbackCount() == 1);
+    }
+    REQUIRE(tok->callbackCount() == 0);
+    {
+        // A queue registers `this` on the token; destroying the queue must remove it so a later
+        // cancel never calls into freed memory.
+        BoundedQueue<int> q(2, tok);
+        REQUIRE(tok->callbackCount() == 1);
+    }
+    REQUIRE(tok->callbackCount() == 0);
+    CancelRegistration live = tok->onCancel([&] { ++calls; });
+    tok->cancel();
+    tok->cancel();
+    REQUIRE(calls == 1);
+    CancelRegistration late = tok->onCancel([&] { ++calls; }); // already cancelled: runs immediately
+    REQUIRE(calls == 2);
+}
+
+TEST_CASE("A paused wait wakes when its token is cancelled, without resume()") {
+    PauseGate gate;
+    gate.pause();
+    auto tok = std::make_shared<CancellationToken>();
+    std::atomic<bool> returned{false};
+    bool result = true;
+    std::thread t([&] {
+        result = gate.wait(tok.get());
+        returned = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    REQUIRE_FALSE(returned.load());
+    tok->cancel();
+    t.join();
+    REQUIRE(returned.load());
+    REQUIRE_FALSE(result);
+    REQUIRE(tok->callbackCount() == 0);
 }

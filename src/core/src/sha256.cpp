@@ -1,4 +1,5 @@
 #include "r3dss/core/sha256.hpp"
+#include "r3dss/core/paths.hpp"
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -108,16 +109,28 @@ std::string Sha256::hashBytes(const void* data, size_t len) {
     return hex(h.finish());
 }
 
-Expected<std::string> Sha256::hashFile(const std::filesystem::path& p) {
+Expected<std::string> Sha256::hashFile(const std::filesystem::path& p, const CancellationToken* cancel) {
     std::ifstream in(p, std::ios::binary);
-    if (!in) return makeError(ErrorCode::Io, "cannot open for hashing: " + p.string());
+    if (!in) return makeError(ErrorCode::Io, "cannot open for hashing: " + toUtf8(p));
+    std::error_code ec;
+    const uint64_t expected = std::filesystem::file_size(p, ec);
     Sha256 h;
     std::vector<char> buf(1 << 20);
-    while (in) {
+    uint64_t total = 0;
+    for (;;) {
+        if (cancel && cancel->isCancelled()) return makeError(ErrorCode::Cancelled, "hashing cancelled: " + toUtf8(p));
         in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
         const std::streamsize n = in.gcount();
-        if (n > 0) h.update(buf.data(), static_cast<size_t>(n));
+        if (n > 0) {
+            h.update(buf.data(), static_cast<size_t>(n));
+            total += static_cast<uint64_t>(n);
+        }
+        if (in.bad()) return makeError(ErrorCode::Io, "read error while hashing: " + toUtf8(p));
+        if (!in) break; // eof
     }
+    if (!ec && total != expected)
+        return makeError(ErrorCode::Io, "short read while hashing " + toUtf8(p) + " (" + std::to_string(total) + " of " +
+                                            std::to_string(expected) + " bytes)");
     return hex(h.finish());
 }
 

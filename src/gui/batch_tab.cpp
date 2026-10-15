@@ -1,4 +1,5 @@
 #include "batch_tab.hpp"
+#include "qt_paths.hpp"
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileDialog>
@@ -121,13 +122,13 @@ BatchTab::BatchTab(const AppSettings& settings, QWidget* parent) : QWidget(paren
     connect(startBtn_, &QPushButton::clicked, this, &BatchTab::onStartClicked);
     connect(pauseBtn_, &QPushButton::clicked, this, &BatchTab::pauseResume);
     connect(cancelBtn_, &QPushButton::clicked, this, &BatchTab::cancel);
-    connect(outputEdit_, &QLineEdit::textChanged, this, [this](const QString& t) { model_->setOutputDir(fs::path(t.toStdString())); });
+    connect(outputEdit_, &QLineEdit::textChanged, this, [this](const QString& t) { model_->setOutputDir(toPath(t)); });
     updateButtons();
 }
 
 QString BatchTab::title() const {
     if (model_->rowCount() == 0) return "New batch";
-    return QString::fromStdString(model_->rows().front().source.filename().string()) +
+    return toQString(model_->rows().front().source.filename()) +
            (model_->rowCount() > 1 ? QString(" +%1").arg(model_->rowCount() - 1) : QString());
 }
 
@@ -159,9 +160,9 @@ void BatchTab::onAddFiles() {
     settings_.lastInputDir = QFileInfo(files.front()).absolutePath();
     QStringList rejected;
     for (const QString& f : files) {
-        fs::path p(f.toStdString());
+        fs::path p = toPath(f);
         if (p.extension() == ".dng" || p.extension() == ".DNG") p = p.parent_path();
-        if (!model_->addClip(p, fs::path(outputEdit_->text().toStdString()))) rejected << f;
+        if (!model_->addClip(p, toPath(outputEdit_->text()))) rejected << f;
     }
     if (!rejected.isEmpty())
         QMessageBox::warning(this, "Not recognised", "These files are not recognised raw clips:\n" + rejected.join("\n"));
@@ -176,7 +177,7 @@ void BatchTab::onAddFolder() {
     if (dir.isEmpty()) return;
     settings_.lastInputDir = dir;
     if (outputEdit_->text().isEmpty()) outputEdit_->setText(dir + "_supersampled");
-    addFolder(fs::path(dir.toStdString()));
+    addFolder(toPath(dir));
 }
 
 void BatchTab::addFolder(const fs::path& root) {
@@ -184,7 +185,7 @@ void BatchTab::addFolder(const fs::path& root) {
     so.recursive = recursiveBox_->isChecked();
     so.preserveStructure = preserveBox_->isChecked();
     so.archiveMode = archiveBox_->isChecked();
-    auto res = pipeline::scanFolder(root, fs::path(outputEdit_->text().toStdString()), so);
+    auto res = pipeline::scanFolder(root, toPath(outputEdit_->text()), so);
     if (!res) {
         QMessageBox::warning(this, "Scan failed", QString::fromStdString(res.error().toString()));
         return;
@@ -215,7 +216,7 @@ void BatchTab::onBrowseOutput() {
 pipeline::BatchJob BatchTab::buildJob() const {
     pipeline::BatchJob job;
     job.name = title().toStdString();
-    job.outputRoot = fs::path(outputEdit_->text().toStdString());
+    job.outputRoot = toPath(outputEdit_->text());
     job.archiveMode = archiveBox_->isChecked();
     settings_.applyTo(job.options);
     static const SizePreset sizes[] = {SizePreset::SixK, SizePreset::UHD, SizePreset::TwoK, SizePreset::FHD, SizePreset::Same};
@@ -267,7 +268,7 @@ void BatchTab::startNow() {
         summaryLabel_->setText(QString("Finished: %1 done, %2 failed, %3 skipped, %4 cancelled, %5 copied in %6 s%7")
                                    .arg(res.done).arg(res.failed).arg(res.skipped).arg(res.cancelled).arg(res.copies.size())
                                    .arg(res.seconds, 0, 'f', 1)
-                                   .arg(res.manifest.empty() ? QString() : "\nManifest: " + QString::fromStdString(res.manifest.string())));
+                                   .arg(res.manifest.empty() ? QString() : "\nManifest: " + toQString(res.manifest)));
         setState(BatchState::Finished);
         emit statusText(QString("%1 finished").arg(title()));
         emit finished(this);

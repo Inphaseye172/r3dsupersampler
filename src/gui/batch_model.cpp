@@ -1,4 +1,5 @@
 #include "batch_model.hpp"
+#include "qt_paths.hpp"
 #include <QApplication>
 #include <QPainter>
 #include <QStyleOptionProgressBar>
@@ -33,7 +34,7 @@ QVariant BatchModel::headerData(int section, Qt::Orientation o, int role) const 
 QVariant BatchModel::data(const QModelIndex& idx, int role) const {
     if (!idx.isValid() || idx.row() >= rowCount()) return {};
     const ClipRow& r = rows_[static_cast<size_t>(idx.row())];
-    if (role == Qt::ToolTipRole) return QString::fromStdString(r.source.string()) + "\n" + r.message;
+    if (role == Qt::ToolTipRole) return toQString(r.source) + "\n" + r.message;
     if (role == Qt::UserRole) return r.progressPercent;
     if (role == Qt::ForegroundRole) {
         if (r.state == RowState::Failed) return QColor(200, 60, 60);
@@ -42,7 +43,7 @@ QVariant BatchModel::data(const QModelIndex& idx, int role) const {
     }
     if (role != Qt::DisplayRole) return {};
     switch (idx.column()) {
-    case File: return QString::fromStdString(r.source.filename().string());
+    case File: return toQString(r.source.filename());
     case Format: return r.format;
     case Resolution: return r.resolution;
     case Fps: return r.fps;
@@ -142,7 +143,7 @@ void BatchModel::setResult(int row, const pipeline::ClipResult& res) {
     case pipeline::ClipStatus::Skipped: r.state = RowState::Skipped; break;
     case pipeline::ClipStatus::Cancelled: r.state = RowState::Cancelled; break;
     }
-    r.output = QString::fromStdString(res.output.filename().string());
+    r.output = toQString(res.output.filename());
     QString msg = QString::fromStdString(res.message);
     if (res.status == pipeline::ClipStatus::Done)
         msg = QString("%1x%2 -> %3x%4, %5 frames, %6 s, %7 MiB, %8 bpp (%9)")

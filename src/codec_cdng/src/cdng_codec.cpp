@@ -1,4 +1,5 @@
 #include "r3dss/codec_cdng/cdng_codec.hpp"
+#include "r3dss/core/paths.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -18,7 +19,7 @@ namespace fs = std::filesystem;
 namespace {
 
 std::string lowerExt(const fs::path& p) {
-    std::string e = p.extension().string();
+    std::string e = toUtf8(p.extension());
     std::transform(e.begin(), e.end(), e.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return e;
 }
@@ -280,7 +281,7 @@ public:
         std::error_code ec;
         dir_ = fs::is_directory(path, ec) ? path : path.parent_path();
         frames_ = listDngFrames(dir_);
-        if (frames_.empty()) return makeError(ErrorCode::Format, "no .dng frames in " + dir_.string());
+        if (frames_.empty()) return makeError(ErrorCode::Format, "no .dng frames in " + toUtf8(dir_));
         info_ = ClipInfo{};
         info_.format = Format::CinemaDNG;
         info_.path = dir_;
@@ -294,7 +295,8 @@ public:
         if (info_.startTimecode) info_.startTimecode->fps = fps;
         for (const auto& f : frames_) info_.sourceBytes += fs::file_size(f, ec);
         // Audio sidecar: <dirname>.wav, else the first .wav in the directory.
-        fs::path wav = dir_ / (dir_.filename().string() + ".wav");
+        fs::path wav = dir_ / dir_.filename();
+        wav += ".wav";
         if (!fs::exists(wav, ec)) {
             wav.clear();
             for (const auto& e : fs::directory_iterator(dir_, ec))
@@ -308,7 +310,7 @@ public:
                 info_.audio = wi->audio;
                 info_.sourceBytes += fs::file_size(wav, ec);
             } else {
-                R3DSS_LOG_WARN("cdng", "ignoring unreadable audio sidecar " + wav.string() + ": " + wi.error().toString());
+                R3DSS_LOG_WARN("cdng", "ignoring unreadable audio sidecar " + toUtf8(wav) + ": " + wi.error().toString());
             }
         }
         return info_;
@@ -372,10 +374,10 @@ public:
         if (cfg.width & 1u || cfg.height & 1u) return makeError(ErrorCode::InvalidArgument, "odd output size");
         std::error_code ec;
         fs::create_directories(cfg.dest, ec);
-        if (!fs::is_directory(cfg.dest, ec)) return makeError(ErrorCode::Io, "cannot create " + cfg.dest.string());
-        clipName_ = cfg.clipName.empty() ? cfg.dest.filename().string() : cfg.clipName;
+        if (!fs::is_directory(cfg.dest, ec)) return makeError(ErrorCode::Io, "cannot create " + toUtf8(cfg.dest));
+        clipName_ = cfg.clipName.empty() ? toUtf8(cfg.dest.filename()) : cfg.clipName;
         if (cfg.audio.present()) {
-            wavPath_ = cfg.dest / (clipName_ + ".wav");
+            wavPath_ = cfg.dest / fromUtf8(clipName_ + ".wav");
             R3DSS_TRY(wav_.begin(wavPath_, cfg.audio));
             summary_.files.push_back(wavPath_);
         }
@@ -387,7 +389,7 @@ public:
             return makeError(ErrorCode::InvalidArgument, "frame size does not match writer config");
         char name[64];
         std::snprintf(name, sizeof name, "_%06lld.dng", static_cast<long long>(frameNo_));
-        const fs::path p = cfg_.dest / (clipName_ + name);
+        const fs::path p = cfg_.dest / fromUtf8(clipName_ + name);
         Writer w;
         Writer::IfdBuilder raw, exif;
         std::vector<uint32_t> offsets, counts;

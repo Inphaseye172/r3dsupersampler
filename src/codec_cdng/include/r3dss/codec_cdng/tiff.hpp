@@ -12,7 +12,8 @@ namespace r3dss::codec::tiff {
 
 enum class Type : uint16_t {
     Byte = 1, Ascii = 2, Short = 3, Long = 4, Rational = 5, SByte = 6, Undefined = 7,
-    SShort = 8, SLong = 9, SRational = 10, Float = 11, Double = 12
+    SShort = 8, SLong = 9, SRational = 10, Float = 11, Double = 12,
+    Ifd = 13 // TIFF Technical Note 1: a LONG holding an IFD offset (SubIFDs / ExifIFD may use it)
 };
 uint32_t typeSize(Type t);
 
@@ -109,8 +110,9 @@ inline constexpr uint16_t NewSubFileType = 254, ImageWidth = 256, ImageLength = 
                           ISOSpeedRatings = 34855, ExifVersion = 36864, FocalLength = 37386, LensModel = 42036,
                           DNGVersion = 50706, DNGBackwardVersion = 50707, UniqueCameraModel = 50708,
                           CFAPlaneColor = 50710, CFALayout = 50711, BlackLevelRepeatDim = 50713, BlackLevel = 50714,
-                          WhiteLevel = 50717, ColorMatrix1 = 50721, ColorMatrix2 = 50722, AsShotNeutral = 50728,
-                          DNGPrivateData = 50740, CalibrationIlluminant1 = 50778, CalibrationIlluminant2 = 50779,
+                          LinearizationTable = 50712, BlackLevelDeltaH = 50715, BlackLevelDeltaV = 50716,
+                          WhiteLevel = 50717, DefaultCropOrigin = 50719, DefaultCropSize = 50720, ColorMatrix1 = 50721, ColorMatrix2 = 50722, AsShotNeutral = 50728,
+                          BaselineExposure = 50730, DNGPrivateData = 50740, ActiveArea = 50829, CalibrationIlluminant1 = 50778, CalibrationIlluminant2 = 50779,
                           OriginalRawFileName = 50827, TimeCodes = 51043, FrameRate = 51044, TStop = 51058,
                           ReelName = 51081, CameraLabel = 51105;
 }

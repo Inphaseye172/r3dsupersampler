@@ -19,7 +19,7 @@ bool hasRuntime(const std::filesystem::path& dir) {
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec)) return false;
     for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
-        const std::string n = e.path().filename().string();
+        const std::string n = toUtf8(e.path().filename());
         if (n.rfind("REDR3D", 0) == 0) return true;
     }
     return false;
@@ -34,7 +34,16 @@ void doInit() {
     if (const char* env = std::getenv("R3DSDK_LIBDIR")) candidates.emplace_back(env);
     for (const auto& dir : candidates) {
         if (!hasRuntime(dir)) continue;
-        const std::string full = std::filesystem::absolute(dir).string();
+        std::string full;
+        try {
+            // InitializeSdk() takes a narrow string; on Windows that is the ANSI code page.
+            full = std::filesystem::absolute(dir).string();
+        } catch (const std::exception&) {
+            g_status = "RED R3D SDK runtime folder " + toUtf8(dir) +
+                       " cannot be expressed in the system code page; install to a path with plain characters";
+            R3DSS_LOG_WARN("r3dsdk", g_status);
+            continue;
+        }
         const R3DSDK::InitializeStatus st = R3DSDK::InitializeSdk(full.c_str(), OPTION_RED_NONE);
         if (st == R3DSDK::ISInitializeOK) {
             g_ok = true;

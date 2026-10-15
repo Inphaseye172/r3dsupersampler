@@ -1,4 +1,5 @@
 #include "r3dss/pipeline/archive_copier.hpp"
+#include "r3dss/core/paths.hpp"
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include "r3dss/core/sha256.hpp"
@@ -16,10 +17,11 @@ Expected<CopyResult> copyAndVerify(const fs::path& source, const fs::path& dest,
     std::error_code ec;
     fs::create_directories(dest.parent_path(), ec);
     std::ifstream in(source, std::ios::binary);
-    if (!in) return makeError(ErrorCode::Io, "cannot open " + source.string());
-    const fs::path tmp = dest.string() + ".part";
+    if (!in) return makeError(ErrorCode::Io, "cannot open " + toUtf8(source));
+    fs::path tmp = dest;
+    tmp += ".part";
     std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-    if (!out) return makeError(ErrorCode::Io, "cannot create " + tmp.string());
+    if (!out) return makeError(ErrorCode::Io, "cannot create " + toUtf8(tmp));
     const uint64_t total = fs::file_size(source, ec);
     Sha256 h;
     std::vector<char> buf(4u << 20);
@@ -37,7 +39,7 @@ Expected<CopyResult> copyAndVerify(const fs::path& source, const fs::path& dest,
         out.write(buf.data(), n);
         if (!out) {
             fs::remove(tmp, ec);
-            return makeError(ErrorCode::Io, "write failed: " + tmp.string());
+            return makeError(ErrorCode::Io, "write failed: " + toUtf8(tmp));
         }
         done += static_cast<uint64_t>(n);
         if (progress) progress(done, total);
@@ -46,12 +48,12 @@ Expected<CopyResult> copyAndVerify(const fs::path& source, const fs::path& dest,
     r.bytes = done;
     r.sha256 = Sha256::hex(h.finish());
     fs::rename(tmp, dest, ec);
-    if (ec) return makeError(ErrorCode::Io, "rename failed: " + dest.string());
+    if (ec) return makeError(ErrorCode::Io, "rename failed: " + toUtf8(dest));
     R3DSS_TRY_ASSIGN(check, Sha256::hashFile(dest));
     r.verified = check == r.sha256;
     if (!r.verified) {
         r.error = "hash mismatch after copy";
-        return makeError(ErrorCode::Verification, "copied file hash mismatch: " + dest.string());
+        return makeError(ErrorCode::Verification, "copied file hash mismatch: " + toUtf8(dest));
     }
     // Preserve timestamps where possible.
     fs::last_write_time(dest, fs::last_write_time(source, ec), ec);
@@ -63,18 +65,18 @@ Expected<void> writeManifest(const fs::path& path, const std::vector<CopyResult>
     nlohmann::json j;
     j["copies"] = nlohmann::json::array();
     for (const auto& c : copies)
-        j["copies"].push_back({{"source", c.source.generic_string()}, {"dest", c.dest.generic_string()},
+        j["copies"].push_back({{"source", toUtf8Generic(c.source)}, {"dest", toUtf8Generic(c.dest)},
                                {"sha256", c.sha256}, {"bytes", c.bytes}, {"verified", c.verified}});
     j["produced"] = nlohmann::json::array();
     for (const auto& p : produced) {
         auto h = Sha256::hashFile(p);
         std::error_code ec;
-        j["produced"].push_back({{"path", p.generic_string()}, {"sha256", h ? *h : ""},
+        j["produced"].push_back({{"path", toUtf8Generic(p)}, {"sha256", h ? *h : ""},
                                  {"bytes", std::filesystem::exists(p, ec) ? std::filesystem::file_size(p, ec) : 0}});
     }
     std::ofstream out(path);
-    if (!out) return makeError(ErrorCode::Io, "cannot create manifest " + path.string());
-    out << j.dump(2);
+    if (!out) return makeError(ErrorCode::Io, "cannot create manifest " + toUtf8(path));
+    out << j.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
     return {};
 }
 

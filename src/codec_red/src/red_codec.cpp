@@ -1,4 +1,5 @@
 #include "r3dss/codec_red/red_codec.hpp"
+#include "r3dss/core/paths.hpp"
 #include <algorithm>
 #include <cctype>
 
@@ -6,7 +7,7 @@ namespace r3dss::codec::red {
 
 namespace {
 std::string lowerExt(const std::filesystem::path& p) {
-    std::string e = p.extension().string();
+    std::string e = toUtf8(p.extension());
     std::transform(e.begin(), e.end(), e.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return e;
 }

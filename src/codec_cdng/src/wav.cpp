@@ -1,4 +1,5 @@
 #include "r3dss/codec_cdng/wav.hpp"
+#include "r3dss/core/paths.hpp"
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -15,11 +16,11 @@ void put32(std::vector<uint8_t>& b, uint32_t v) { for (int i = 0; i < 4; ++i) b.
 
 Expected<WavInfo> probe(const std::filesystem::path& p) {
     std::ifstream in(p, std::ios::binary);
-    if (!in) return makeError(ErrorCode::Io, "cannot open " + p.string());
+    if (!in) return makeError(ErrorCode::Io, "cannot open " + toUtf8(p));
     uint8_t hdr[12];
     in.read(reinterpret_cast<char*>(hdr), 12);
     if (in.gcount() != 12 || std::memcmp(hdr, "RIFF", 4) != 0 || std::memcmp(hdr + 8, "WAVE", 4) != 0)
-        return makeError(ErrorCode::Format, "not a WAVE file: " + p.string());
+        return makeError(ErrorCode::Format, "not a WAVE file: " + toUtf8(p));
     WavInfo info;
     bool haveFmt = false;
     uint64_t pos = 12;
@@ -69,7 +70,7 @@ Expected<AudioBlock> read(const std::filesystem::path& p, const WavInfo& info, i
     b.bytes.resize(static_cast<size_t>(count * fb));
     if (count == 0) return b;
     std::ifstream in(p, std::ios::binary);
-    if (!in) return makeError(ErrorCode::Io, "cannot open " + p.string());
+    if (!in) return makeError(ErrorCode::Io, "cannot open " + toUtf8(p));
     in.seekg(static_cast<std::streamoff>(info.dataOffset + static_cast<uint64_t>(first) * fb));
     in.read(reinterpret_cast<char*>(b.bytes.data()), static_cast<std::streamsize>(b.bytes.size()));
     if (static_cast<size_t>(in.gcount()) != b.bytes.size()) return makeError(ErrorCode::Io, "short audio read");
@@ -84,8 +85,12 @@ Expected<void> StreamWriter::begin(const std::filesystem::path& p, const AudioIn
     path_ = p;
     info_ = info;
     samples_ = 0;
-    f_ = std::fopen(p.string().c_str(), "wb");
-    if (!f_) return makeError(ErrorCode::Io, "cannot create " + p.string());
+#ifdef _WIN32
+    f_ = _wfopen(p.c_str(), L"wb");
+#else
+    f_ = std::fopen(p.c_str(), "wb");
+#endif
+    if (!f_) return makeError(ErrorCode::Io, "cannot create " + toUtf8(p));
     const uint16_t bits = static_cast<uint16_t>(sampleFormatBytes(info.format) * 8);
     const bool isFloat = info.format == SampleFormat::Float32;
     const bool extensible = info.channels > 2 || bits > 16;
@@ -112,7 +117,7 @@ Expected<void> StreamWriter::begin(const std::filesystem::path& p, const AudioIn
     h.insert(h.end(), {'d', 'a', 't', 'a'});
     dataSizePos_ = static_cast<long>(h.size());
     put32(h, 0);
-    if (std::fwrite(h.data(), 1, h.size(), f_) != h.size()) return makeError(ErrorCode::Io, "write failed: " + p.string());
+    if (std::fwrite(h.data(), 1, h.size(), f_) != h.size()) return makeError(ErrorCode::Io, "write failed: " + toUtf8(p));
     return {};
 }
 
@@ -120,7 +125,7 @@ Expected<void> StreamWriter::write(const AudioBlock& b) {
     if (!f_) return makeError(ErrorCode::Internal, "wav writer not started");
     if (b.bytes.empty()) return {};
     if (std::fwrite(b.bytes.data(), 1, b.bytes.size(), f_) != b.bytes.size())
-        return makeError(ErrorCode::Io, "audio write failed: " + path_.string());
+        return makeError(ErrorCode::Io, "audio write failed: " + toUtf8(path_));
     samples_ += b.sampleCount;
     return {};
 }

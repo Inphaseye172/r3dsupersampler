@@ -1,4 +1,5 @@
 #include "engine_bridge.hpp"
+#include "qt_paths.hpp"
 
 namespace r3dss::gui {
 
@@ -11,7 +12,7 @@ void EngineWorker::run() {
     cb.onClipDone = [this](size_t i, const pipeline::ClipResult& r) { emit clipDone(static_cast<int>(i), r); };
     cb.onCopyDone = [this](size_t i, const Expected<pipeline::CopyResult>& r) {
         emit copyDone(static_cast<int>(i), r.hasValue(),
-                      r ? QString::fromStdString(r->dest.string()) : QString::fromStdString(r.error().toString()));
+                      r ? toQString(r->dest) : QString::fromStdString(r.error().toString()));
     };
     emit finished(sched_.run(job_, cb));
 }

@@ -1,4 +1,5 @@
 #include "r3dss/pipeline/verifier.hpp"
+#include "r3dss/core/paths.hpp"
 #include <cmath>
 
 namespace r3dss::pipeline {
@@ -9,7 +10,7 @@ VerificationResult verifyOutput(const std::filesystem::path& output, const Expec
     auto pass = [&](const std::string& s) { r.checked.push_back(s); };
     auto factory = codec::CodecRegistry::instance().probe(output);
     if (!factory) {
-        fail("output not recognised by any codec: " + output.string());
+        fail("output not recognised by any codec: " + toUtf8(output));
         return r;
     }
     auto reader = factory->makeReader();
