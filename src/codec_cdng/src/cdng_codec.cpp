@@ -155,6 +155,7 @@ void unpackBits(const uint8_t* src, size_t srcLen, uint32_t bits, uint32_t count
     }
 }
 
+    (void)ifd;
 Expected<void> decodeFrameData(const Reader& r, const Ifd& ifd, const FrameGeometry& g, BayerFrame& out) {
     out.data.resize(static_cast<size_t>(g.width) * g.height);
     const uint32_t blocksX = g.tiled ? (g.width + g.blockW - 1) / g.blockW : 1;

@@ -5,6 +5,5 @@
     "nlohmann-json",
     "cli11",
     "catch2"
-  ],
-  "builtin-baseline": "b322364f06075ef4d4b6b4c96a5a9b8bd3e0d0ef"
+  ]
 }

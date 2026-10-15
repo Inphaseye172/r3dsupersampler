@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      cuda:
+        description: "Also build the CUDA resampler on Windows (slow toolkit install)"
+        type: boolean
+        default: false
+
+jobs:
+  linux:
+    name: Linux (engine, CLI, GUI, tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build catch2 nlohmann-json3-dev libcli11-dev qt6-base-dev libgl1-mesa-dev
+      - name: Configure
+        run: cmake --preset linux-ci
+      - name: Build
+        run: cmake --build --preset linux-ci -j"$(nproc)"
+      - name: Test
+        run: ctest --preset linux-ci
+      - name: CLI end-to-end
+        run: |
+          ./build/linux-ci/src/cli/r3dss-cli synth /tmp/synth --width 1920 --height 1080 --frames 8
+          ./build/linux-ci/src/cli/r3dss-cli convert /tmp/synth -o /tmp/out --size 960x540 --profile Q5
+          ./build/linux-ci/src/cli/r3dss-cli probe /tmp/out/synth_custom_Q5
+      - name: GUI smoke (offscreen)
+        run: QT_QPA_PLATFORM=offscreen ./build/linux-ci/src/gui/R3DSupersampler --smoke
+      - name: Benchmark (small)
+        run: ./build/linux-ci/bench/r3dss-bench --width 3840 --height 2160 --frames 4 --size FHD --json bench-linux.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-linux
+          path: bench-linux.json
+
+  windows:
+    name: Windows x64 (MSVC, vcpkg, Qt, installer)
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\.deps\vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.deps\vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: .deps\vcpkg-cache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .deps\vcpkg-cache | Out-Null
+          git clone --depth 1 https://github.com/microsoft/vcpkg .deps\vcpkg
+          & .deps\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.*"
+          arch: win64_msvc2022_64
+          cache: true
+      - name: CUDA toolkit (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.cuda }}
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: "12.6.0"
+          method: network
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure
+        shell: pwsh
+        run: |
+          $env:QT_ROOT = $env:QT_ROOT_DIR
+          cmake --preset windows-release
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset windows-release
+      - name: Test
+        shell: pwsh
+        run: ctest --preset windows-release
+      - name: CLI end-to-end
+        shell: pwsh
+        run: |
+          .\build\windows-release\src\cli\r3dss-cli.exe synth $env:TEMP\synth --width 1920 --height 1080 --frames 8
+          .\build\windows-release\src\cli\r3dss-cli.exe convert $env:TEMP\synth -o $env:TEMP\out --size 960x540
+      - name: Install + package
+        shell: pwsh
+        run: |
+          cmake --install build\windows-release --prefix dist
+          Compress-Archive -Path dist\* -DestinationPath R3DSupersampler-win64.zip -Force
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DSourceDir="$PWD\dist" /DAppVersion="0.1.0" installer\r3dss.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R3DSupersampler-win64-portable
+          path: R3DSupersampler-win64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R3DSupersampler-win64-installer
+          path: installer\Output\*.exe
+      - name: Release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            R3DSupersampler-win64.zip
+            installer/Output/*.exe
