@@ -279,6 +279,14 @@ TEST_CASE("Lossless JPEG decoder is strict: truncated, surplus, garbage and out-
         t[3] = 0xC0;
         REQUIRE_FALSE(ljpeg::decode(t.data(), t.size()));
     }
+    // A frame header far larger than its data is rejected before allocating the image.
+    {
+        std::vector<uint8_t> t = good;
+        t[7] = t[8] = t[9] = t[10] = 0xFF; // 65535 rows x 65535 columns x 2 components
+        auto r = ljpeg::decode(t.data(), t.size());
+        REQUIRE_FALSE(r);
+        REQUIRE(r.error().message.find("larger than the entropy data") != std::string::npos);
+    }
 }
 
 TEST_CASE("Lossless JPEG encoder codes differences without wrapping below 16-bit precision") {
@@ -307,7 +315,7 @@ TEST_CASE("Lossless JPEG compresses a smooth synthetic frame") {
     auto enc = ljpeg::encode(f.data.data(), f.width, f.height, p);
     REQUIRE(enc);
     // 12-bit content with mild noise codes at ~9 bits/sample in the 16-bit container.
-    REQUIRE(enc->size() < f.byteSize() * 0.65);
+    REQUIRE(static_cast<double>(enc->size()) < static_cast<double>(f.byteSize()) * 0.65);
 }
 
 TEST_CASE("TIFF writer output is readable by the TIFF reader") {

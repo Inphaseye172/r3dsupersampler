@@ -282,6 +282,10 @@ Expected<Image> decode(const uint8_t* data, size_t len) {
         if (!tables[c.td].present) return formatError("missing Huffman table");
     if (predictor < 1 || predictor > 7) return formatError("bad predictor");
 
+    // Every sample costs at least one bit (the shortest Huffman code), so a header claiming more
+    // samples than the data has bits is corrupt; checked before allocating the image.
+    if (static_cast<uint64_t>(img.width) * img.height > 8ull * (len - pos))
+        return formatError("frame header is larger than the entropy data (truncated or corrupt)");
     const uint32_t nc = img.components;
     const uint32_t cols = img.width / nc;
     img.samples.resize(static_cast<size_t>(img.width) * img.height);
