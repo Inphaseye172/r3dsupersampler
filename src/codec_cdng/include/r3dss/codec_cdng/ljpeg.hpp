@@ -1,6 +1,10 @@
 // Lossless JPEG (ITU-T T.81 process 14, SOF3) decoder and encoder for 2..16-bit samples,
-// as used by DNG Compression = 7. The encoder writes 2 interleaved components with predictor 1
-// so each sample is predicted from the same-colour neighbour two sites to the left.
+// as used by DNG Compression = 7. The encoder writes interleaved components (2 by default) with
+// predictor 1 so each sample is predicted from the same-colour neighbour two sites to the left.
+//
+// The decoder is strict: the scan must be followed by EOI (or end at the end of the data), every
+// restart marker must be in sequence, and truncated, surplus or out-of-range entropy data is an
+// error rather than a silently wrong image.
 #pragma once
 #include <cstdint>
 #include <vector>
@@ -19,9 +23,10 @@ struct Image {
 Expected<Image> decode(const uint8_t* data, size_t len);
 
 struct EncodeParams {
-    uint16_t precision = 16;
-    uint16_t components = 2; // 1..4; width must be divisible by components
-    uint8_t predictor = 1;   // 1..7
+    uint16_t precision = 16;      // 2..16; every sample must be < 2^precision
+    uint16_t components = 2;      // 1..4; width must be divisible by components
+    uint8_t predictor = 1;        // 1..7
+    uint32_t restartInterval = 0; // MCUs per restart interval (DRI); 0 = no restart markers
 };
 // `samples` is row-major with `width` samples per row and `height` rows.
 Expected<std::vector<uint8_t>> encode(const uint16_t* samples, uint32_t width, uint32_t height, const EncodeParams& p);
