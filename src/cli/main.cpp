@@ -384,8 +384,13 @@ int main(int argc, char** argv) {
     convert->add_flag("--no-gpu", noGpu, "force the CPU resampler");
     convert->add_flag("--no-clip-aware", noClipAware, "disable the clipped-highlight fallback");
     convert->add_flag("--lossless", lossless, "request lossless encoding where supported (CinemaDNG is always lossless)");
-    convert->add_flag("--overwrite", overwrite, "replace existing outputs");
+    convert->add_flag("--overwrite", overwrite, "replace existing outputs (the old one stays until the new one is complete)");
     convert->add_flag("-q,--quiet", quiet, "less progress output");
+    const char* exitCodes =
+        "Outputs are written to <name>.partial and renamed when complete and verified; Ctrl-C cancels and removes "
+        "unfinished outputs.\nExit codes: 0 every clip done (or its output already existed), 1 a clip failed or was "
+        "cancelled or a copy failed, 3 a clip was skipped for another reason (e.g. size larger than the source).";
+    convert->footer(exitCodes);
 
     // scan
     auto* scan = app.add_subcommand("scan", "Scan a folder and write (or run) a batch job");
@@ -402,7 +407,8 @@ int main(int argc, char** argv) {
     scan->add_option("--profile", profile, "Q1|Q3|Q5|Q7 (codecs with rate control; CinemaDNG is always lossless)");
     scan->add_option("--format,--container", format, "keep|cdng");
     scan->add_flag("--no-gpu", noGpu, "force the CPU resampler");
-    scan->add_flag("--overwrite", overwrite, "replace existing outputs");
+    scan->add_flag("--overwrite", overwrite, "replace existing outputs (the old one stays until the new one is complete)");
+    scan->footer(exitCodes);
 
     // synth
     auto* synthCmd = app.add_subcommand("synth", "Generate a synthetic CinemaDNG clip for testing");
