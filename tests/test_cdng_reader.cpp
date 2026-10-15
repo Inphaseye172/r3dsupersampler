@@ -18,7 +18,9 @@ namespace fs = std::filesystem;
 namespace {
 
 fs::path tmpDir(const std::string& name) {
-    fs::path p = fs::temp_directory_path() / ("r3dss-test-" + name);
+    // Unique per test process: several builds may run the suite at the same time.
+    static const std::string run = std::to_string(std::random_device{}());
+    fs::path p = fs::temp_directory_path() / ("r3dss-test-" + name + "-" + run);
     std::error_code ec;
     fs::remove_all(p, ec);
     fs::create_directories(p, ec);
@@ -162,7 +164,8 @@ TEST_CASE("Frame listing: natural order, hidden and AppleDouble files skipped") 
     }
     // AppleDouble companions and other hidden files are not frames (and would not parse).
     for (const char* junk : {"._np_0.dng", "._np_10.dng", ".hidden.dng"}) {
-        std::ofstream(dir / junk, std::ios::binary) << "\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        ";
+        static const char kAppleDouble[] = "\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        ";
+        std::ofstream(dir / junk, std::ios::binary).write(kAppleDouble, sizeof kAppleDouble - 1);
     }
     const auto frames = listDngFrames(dir);
     std::vector<std::string> names;
