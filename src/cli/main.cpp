@@ -1,6 +1,7 @@
 // r3dss-cli: headless front end to the engine. Same job model as the GUI.
 #include <CLI/CLI.hpp>
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <map>
 #include <iostream>
@@ -16,6 +17,7 @@
 #include "r3dss/pipeline/folder_scanner.hpp"
 #include "r3dss/pipeline/scheduler.hpp"
 #include "r3dss/synth/synth.hpp"
+#include "interrupt.hpp"
 #if defined(R3DSS_HAVE_CUDA)
 #include "r3dss/resample_cuda/cuda_resampler.hpp"
 #endif
@@ -275,6 +277,75 @@ int cmdDecode(const fs::path& path, int64_t frame, bool all, uint32_t downscale,
     return 0;
 }
 
+// Parses a start timecode strictly: HH:MM:SS:FF (non-drop) or HH:MM:SS;FF (drop-frame). On success
+// `note` may hold a remark (drop-frame at a rate where no frame numbers are dropped).
+std::optional<Timecode> parseStartTimecode(const std::string& text, Rational fps, std::string& note) {
+    note.clear();
+    auto bad = [&](const std::string& why) {
+        note = why;
+        return std::optional<Timecode>();
+    };
+    if (text.size() != 11 || text[2] != ':' || text[5] != ':' || (text[8] != ':' && text[8] != ';'))
+        return bad("use HH:MM:SS:FF, or HH:MM:SS;FF for drop-frame");
+    int v[4];
+    for (int i = 0; i < 4; ++i) {
+        const char a = text[static_cast<size_t>(i) * 3], b = text[static_cast<size_t>(i) * 3 + 1];
+        if (a < '0' || a > '9' || b < '0' || b > '9') return bad("use HH:MM:SS:FF, or HH:MM:SS;FF for drop-frame");
+        v[i] = (a - '0') * 10 + (b - '0');
+    }
+    const bool df = text[8] == ';';
+    const int nominal = static_cast<int>(std::ceil(fps.toDouble() - 1e-6));
+    if (v[0] > 23 || v[1] > 59 || v[2] > 59) return bad("hours must be 00-23, minutes and seconds 00-59");
+    if (v[3] >= nominal) return bad("frames must be below " + std::to_string(nominal) + " at this frame rate");
+    if (df && (nominal == 30 || nominal == 60)) {
+        const int dropped = nominal == 30 ? 2 : 4;
+        if (v[2] == 0 && v[1] % 10 != 0 && v[3] < dropped)
+            return bad("this drop-frame timecode does not exist (frames 00-" + std::to_string(dropped - 1) +
+                       " are skipped at the start of each minute except every tenth)");
+    } else if (df) {
+        note = "drop-frame counting only applies to 29.97 and 59.94 fps; the timecode is flagged drop-frame but no "
+               "frame numbers are skipped";
+    }
+    Timecode tc;
+    tc.hours = v[0];
+    tc.minutes = v[1];
+    tc.seconds = v[2];
+    tc.frames = v[3];
+    tc.dropFrame = df;
+    tc.fps = fps;
+    return tc;
+}
+
+// Parses --size: a preset name, or <W>x<H> (digits only). A custom size must lie in 16..65535 once
+// rounded to even (the mosaic needs whole 2x2 cells). Returns an error message, or "" when valid.
+std::string parseSize(const std::string& text, pipeline::JobOptions& o) {
+    if (auto sp = sizePresetFromName(text); sp && *sp != SizePreset::Custom) {
+        o.size = *sp;
+        o.customSize.reset();
+        return {};
+    }
+    const std::string usage = "bad --size '" + text + "': use 6K, UHD, 2K, FHD, same or <width>x<height> (e.g. 1920x1080)";
+    const size_t x = text.find('x');
+    if (x == std::string::npos || x == 0 || x + 1 >= text.size()) return usage;
+    uint32_t dims[2] = {0, 0};
+    const std::string parts[2] = {text.substr(0, x), text.substr(x + 1)};
+    for (int i = 0; i < 2; ++i) {
+        if (parts[i].size() > 6) return usage + " (value too large)";
+        uint64_t v = 0;
+        for (char c : parts[i]) {
+            if (c < '0' || c > '9') return usage;
+            v = v * 10 + static_cast<uint64_t>(c - '0');
+        }
+        const uint64_t aligned = (v + 1) / 2 * 2; // odd values round up to even, as the size planner does
+        if (aligned < 16) return "bad --size '" + text + "': width and height must be at least 16";
+        if (aligned > 65535) return "bad --size '" + text + "': width and height must be at most 65534";
+        dims[i] = static_cast<uint32_t>(v);
+    }
+    o.size = SizePreset::Custom;
+    o.customSize = resample::OutputSize{dims[0], dims[1]};
+    return {};
+}
+
 int runBatch(const pipeline::BatchJob& job, bool quiet) {
     pipeline::Scheduler sched;
     pipeline::BatchCallbacks cb;
@@ -292,24 +363,45 @@ int runBatch(const pipeline::BatchJob& job, bool quiet) {
     cb.onClipDone = [&](size_t, const pipeline::ClipResult& r) {
         std::lock_guard<std::mutex> lk(outMutex);
         std::cout << "\n  -> " << pipeline::clipStatusName(r.status) << ": " << r.message;
-        if (r.status == pipeline::ClipStatus::Done)
+        if (r.status == pipeline::ClipStatus::Done) {
             std::cout << " | " << r.srcWidth << "x" << r.srcHeight << " -> " << r.outWidth << "x" << r.outHeight << ", "
                       << r.frames << " frames in " << std::setprecision(2) << r.seconds << " s ("
                       << (r.seconds > 0 ? r.frames / r.seconds : 0.0) << " fps, " << r.resampler << "), " << (r.outputBytes >> 20)
-                      << " MiB, " << std::setprecision(2) << r.averageBpp << " bpp (budget " << r.averageBudgetBpp << ")";
+                      << " MiB, " << std::setprecision(2) << r.averageBpp << " bpp";
+            // A budget exists only for codecs with rate control; CinemaDNG output is always lossless.
+            if (r.rateControl) std::cout << " (budget " << r.averageBudgetBpp << ")";
+            else std::cout << " (lossless)";
+            if (!r.output.empty()) std::cout << "\n     " << toUtf8(r.output);
+        }
         std::cout << "\n";
+        for (const auto& w : r.warnings) std::cout << "     warning: " << w << "\n";
+        for (const auto& e : r.copyErrors) std::cout << "     archive copy failed: " << e << "\n";
     };
     cb.onCopyDone = [&](size_t, const Expected<pipeline::CopyResult>& r) {
         std::lock_guard<std::mutex> lk(outMutex);
-        if (r) std::cout << "  copied " << toUtf8(r->dest) << " (" << r->sha256.substr(0, 12) << ", verified)\n";
+        if (r && r->alreadyPresent)
+            std::cout << "  already archived " << toUtf8(r->dest) << " (" << r->sha256.substr(0, 12) << ", identical)\n";
+        else if (r) std::cout << "  copied " << toUtf8(r->dest) << " (" << r->sha256.substr(0, 12) << ", verified)\n";
         else std::cout << "  copy failed: " << r.error().toString() << "\n";
     };
-    const auto res = sched.run(job, cb);
+    pipeline::BatchResult res;
+    {
+        // Ctrl-C / SIGTERM cancel the batch through the normal path, so unfinished outputs are removed.
+        cli::InterruptGuard interrupt([&sched] { sched.cancel(); });
+        res = sched.run(job, cb);
+    }
     std::cout << "batch '" << job.name << "': " << res.done << " done, " << res.failed << " failed, " << res.skipped
               << " skipped, " << res.cancelled << " cancelled, " << res.copies.size() << " copied, " << std::setprecision(1)
               << res.seconds << " s\n";
     if (!res.manifest.empty()) std::cout << "manifest: " << toUtf8(res.manifest) << "\n";
-    return (res.failed || !res.copyErrors.empty()) ? 1 : 0;
+    const int code = pipeline::batchExitCode(res);
+    if (res.aborted) std::cout << "batch cancelled: unfinished outputs were removed\n";
+    if (code == 3) {
+        const size_t notWritten = res.skipped - res.skippedExisting;
+        if (res.done == 0) std::cout << "no output written: every clip was skipped (see the messages above)\n";
+        else std::cout << "no output written for " << notWritten << " of " << res.clips.size() << " clips: they were skipped (see above)\n";
+    }
+    return code;
 }
 
 } // namespace
@@ -353,7 +445,7 @@ int main(int argc, char** argv) {
     convert->add_option("-o,--output", outDir, "output directory");
     convert->add_option("--job", jobFile, "batch job JSON (overrides the other options)");
     convert->add_option("--size", size, "6K|UHD|2K|FHD|same|WxH");
-    convert->add_option("--profile", profile, "Q1|Q3|Q5|Q7");
+    convert->add_option("--profile", profile, "Q1|Q3|Q5|Q7 (codecs with rate control; CinemaDNG is always lossless)");
     convert->add_option("--format,--container", format, "keep|cdng (ProRes / DNxHR arrive in milestone 4)");
     convert->add_option("--kernel", kernel, "lanczos3|area");
     convert->add_option("--parallel", parallel, "max parallel clips (0 = auto)");
@@ -361,7 +453,7 @@ int main(int argc, char** argv) {
     convert->add_flag("--no-verify", noVerify, "skip output verification");
     convert->add_flag("--no-gpu", noGpu, "force the CPU resampler");
     convert->add_flag("--no-clip-aware", noClipAware, "disable the clipped-highlight fallback");
-    convert->add_flag("--lossless", lossless, "request lossless encoding where supported");
+    convert->add_flag("--lossless", lossless, "request lossless encoding where supported (CinemaDNG is always lossless)");
     convert->add_flag("--overwrite", overwrite, "replace existing outputs");
     convert->add_flag("-q,--quiet", quiet, "less progress output");
 
@@ -377,7 +469,7 @@ int main(int argc, char** argv) {
     scan->add_flag("--flat", flat, "do not preserve folder structure");
     scan->add_flag("--run", run, "run the job immediately");
     scan->add_option("--size", size, "6K|UHD|2K|FHD|same|WxH");
-    scan->add_option("--profile", profile, "Q1|Q3|Q5|Q7");
+    scan->add_option("--profile", profile, "Q1|Q3|Q5|Q7 (codecs with rate control; CinemaDNG is always lossless)");
     scan->add_option("--format,--container", format, "keep|cdng");
     scan->add_flag("--no-gpu", noGpu, "force the CPU resampler");
     scan->add_flag("--overwrite", overwrite, "replace existing outputs");
@@ -386,7 +478,7 @@ int main(int argc, char** argv) {
     auto* synthCmd = app.add_subcommand("synth", "Generate a synthetic CinemaDNG clip for testing");
     std::string synthOut, pattern = "scene";
     uint32_t sw = 1920, sh = 1080, frames = 24, channels = 2, seed = 1;
-    std::string synthFps = "25";
+    std::string synthFps = "25", synthCfa = "RGGB", synthTimecode = "01:00:00:00";
     uint16_t bits = 12;
     bool uncompressed = false;
     synthCmd->add_option("output", synthOut, "clip directory to create")->required();
@@ -399,6 +491,9 @@ int main(int argc, char** argv) {
     synthCmd->add_option("--seed", seed);
     synthCmd->add_option("--fps", synthFps, "frame rate, e.g. 24, 25, 24000/1001");
     synthCmd->add_flag("--uncompressed", uncompressed, "write uncompressed DNG instead of lossless JPEG");
+    synthCmd->add_option("--cfa", synthCfa, "CFA pattern: RGGB|GRBG|GBRG|BGGR (default RGGB)");
+    synthCmd->add_option("--timecode", synthTimecode,
+                         "start timecode HH:MM:SS:FF, or HH:MM:SS;FF for drop-frame (default 01:00:00:00)");
 
     // Windows hands main() ANSI-encoded argv; CLI11 re-reads the wide command line so every
     // argument below is UTF-8 on all platforms (paths are then built with fromUtf8).
@@ -414,11 +509,9 @@ int main(int argc, char** argv) {
     logger.openFile(Logger::defaultLogDir() / "r3dss-cli.log");
 
     auto parseOptions = [&](pipeline::JobOptions& o) -> bool {
-        if (auto sp = sizePresetFromName(size)) o.size = *sp;
-        else {
-            unsigned w = 0, h = 0;
-            if (std::sscanf(size.c_str(), "%ux%u", &w, &h) == 2) { o.size = SizePreset::Custom; o.customSize = resample::OutputSize{w, h}; }
-            else { std::cerr << "bad --size\n"; return false; }
+        if (const std::string err = parseSize(size, o); !err.empty()) {
+            std::cerr << err << "\n";
+            return false;
         }
         auto p = qualityProfileFromName(profile);
         if (!p) { std::cerr << "bad --profile\n"; return false; }
@@ -471,10 +564,18 @@ int main(int argc, char** argv) {
             p.fps = Rational{num, den};
         }
         p.audioChannels = channels;
-        p.startTimecode = Timecode::parse("01:00:00:00", p.fps);
-        p.clipName = toUtf8(fromUtf8(synthOut).filename());
+        auto cfa = cfaFromName(synthCfa);
+        if (!cfa) { std::cerr << "bad --cfa '" << synthCfa << "': use RGGB, GRBG, GBRG or BGGR\n"; return 1; }
+        p.frame.cfa = *cfa;
+        std::string tcErr;
+        auto tc = parseStartTimecode(synthTimecode, p.fps, tcErr);
+        if (!tc) { std::cerr << "bad --timecode '" << synthTimecode << "': " << tcErr << "\n"; return 1; }
+        if (!tcErr.empty()) std::cerr << "note: " << tcErr << "\n";
+        p.startTimecode = tc;
+        const fs::path synthDir = pipeline::normaliseSourcePath(fromUtf8(synthOut));
+        p.clipName = pipeline::clipStem(synthDir);
         p.losslessJpeg = !uncompressed;
-        auto r = synth::writeSyntheticClip(fromUtf8(synthOut), p);
+        auto r = synth::writeSyntheticClip(synthDir, p);
         if (!r) { std::cerr << r.error().toString() << "\n"; return 1; }
         std::cout << "wrote " << r->frameCount << " frames " << r->width << "x" << r->height << " to " << synthOut << "\n";
         return 0;
@@ -490,7 +591,12 @@ int main(int argc, char** argv) {
             job.name = "cli";
             job.outputRoot = fromUtf8(outDir);
             if (!parseOptions(job.options)) return 1;
-            for (const auto& in : inputs) job.clips.push_back({fromUtf8(in), fromUtf8(outDir), "", ""});
+            for (const auto& in : inputs) {
+                pipeline::ClipJob cj;
+                cj.source = pipeline::normaliseSourcePath(fromUtf8(in)); // "C001/" is the clip C001
+                cj.outputDir = fromUtf8(outDir);
+                job.clips.push_back(cj);
+            }
         }
         return runBatch(job, quiet);
     }
@@ -499,10 +605,11 @@ int main(int argc, char** argv) {
         so.recursive = recursive;
         so.archiveMode = archive;
         so.preserveStructure = !flat;
-        auto res = pipeline::scanFolder(fromUtf8(scanRoot), fromUtf8(scanOut), so);
+        const fs::path root = pipeline::normaliseSourcePath(fromUtf8(scanRoot));
+        auto res = pipeline::scanFolder(root, fromUtf8(scanOut), so);
         if (!res) { std::cerr << res.error().toString() << "\n"; return 1; }
         pipeline::BatchJob job;
-        job.name = toUtf8(fromUtf8(scanRoot).filename());
+        job.name = pipeline::clipStem(root);
         job.outputRoot = fromUtf8(scanOut);
         job.archiveMode = archive;
         if (!parseOptions(job.options)) return 1;
