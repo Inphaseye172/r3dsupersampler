@@ -51,10 +51,15 @@ void doInit() {
             g_dir = full;
             g_status = std::string("RED R3D SDK ") + R3DSDK::GetSdkVersion() + " (runtime: " + full + ")";
             R3DSS_LOG_INFO("r3dsdk", g_status);
+            // The SDK requires FinalizeSdk() after every InitializeSdk(). Clips are owned by readers
+            // that are gone before static teardown, so finalising at exit is safe.
+            std::atexit([] { R3DSDK::FinalizeSdk(); });
             return;
         }
-        g_status = "RED R3D SDK InitializeSdk failed with status " + std::to_string(static_cast<int>(st)) + " for " + full;
+        g_status = "RED R3D SDK InitializeSdk failed with status " + std::to_string(static_cast<int>(st)) + " for " + full +
+                   " (" + R3DSDK::GetSdkVersion() + ")";
         R3DSS_LOG_WARN("r3dsdk", g_status);
+        R3DSDK::FinalizeSdk(); // required even when initialisation failed, before trying the next folder
     }
     if (g_status.empty())
         g_status = "RED R3D SDK runtime libraries not found (expected next to the executable in redsdk/ or in $R3DSDK_LIBDIR)";
