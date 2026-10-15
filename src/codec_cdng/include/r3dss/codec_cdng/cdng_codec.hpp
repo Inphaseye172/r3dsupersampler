@@ -17,7 +17,11 @@ struct CdngWriterOptions {
 std::shared_ptr<ICodecFactory> makeCinemaDngCodecFactory(CdngWriterOptions opts = {});
 
 // Helpers shared with tests and the verifier.
+// The .dng frames of a clip folder in natural order (frame_2 before frame_10); hidden files
+// (names starting with '.', e.g. AppleDouble "._*.dng") are skipped.
 std::vector<std::filesystem::path> listDngFrames(const std::filesystem::path& dir);
+// Natural filename order: digit runs compare by value, everything else by character.
+bool naturalLess(std::string_view a, std::string_view b);
 std::array<uint8_t, 8> encodeSmpteTimecode(const Timecode& tc);
 Timecode decodeSmpteTimecode(const uint8_t* b, Rational fps);
 

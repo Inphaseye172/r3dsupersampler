@@ -66,13 +66,46 @@ Timecode decodeSmpteTimecode(const uint8_t* b, Rational fps) {
     return tc;
 }
 
+bool naturalLess(std::string_view a, std::string_view b) {
+    auto digit = [](char c) { return c >= '0' && c <= '9'; };
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        if (digit(a[i]) && digit(b[j])) {
+            size_t ie = i, je = j;
+            while (ie < a.size() && digit(a[ie])) ++ie;
+            while (je < b.size() && digit(b[je])) ++je;
+            size_t is = i, js = j; // skip leading zeros, keep one digit
+            while (is + 1 < ie && a[is] == '0') ++is;
+            while (js + 1 < je && b[js] == '0') ++js;
+            if (ie - is != je - js) return ie - is < je - js;
+            if (const int c = a.substr(is, ie - is).compare(b.substr(js, je - js)); c != 0) return c < 0;
+            i = ie;
+            j = je;
+        } else {
+            if (a[i] != b[j]) return static_cast<unsigned char>(a[i]) < static_cast<unsigned char>(b[j]);
+            ++i;
+            ++j;
+        }
+    }
+    if (i == a.size() && j == b.size()) return a < b; // equal in natural order (e.g. "01" vs "1")
+    return i == a.size();
+}
+
 std::vector<fs::path> listDngFrames(const fs::path& dir) {
     std::vector<fs::path> out;
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) return out;
-    for (const auto& e : fs::directory_iterator(dir, ec))
-        if (e.is_regular_file(ec) && lowerExt(e.path()) == ".dng") out.push_back(e.path());
-    std::sort(out.begin(), out.end());
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        if (!e.is_regular_file(ec) || lowerExt(e.path()) != ".dng") continue;
+        // Hidden files, notably macOS AppleDouble "._<frame>.dng" companions on exFAT/SMB volumes,
+        // are not frames.
+        const std::string name = toUtf8(e.path().filename());
+        if (name.empty() || name[0] == '.') continue;
+        out.push_back(e.path());
+    }
+    // Natural order, so unpadded frame numbers (clip_2 before clip_10) play in sequence.
+    std::sort(out.begin(), out.end(),
+              [](const fs::path& x, const fs::path& y) { return naturalLess(toUtf8(x.filename()), toUtf8(y.filename())); });
     return out;
 }
 
@@ -83,6 +116,7 @@ struct FrameGeometry {
     uint32_t width = 0, height = 0, bits = 16, compression = 1;
     std::vector<uint64_t> blockOffsets, blockBytes;
     uint32_t blockW = 0, blockH = 0; // tile size, or (width, rowsPerStrip) for strips
+    uint32_t blocksAcross = 1, blocksDown = 1;
     bool tiled = false;
 };
 
@@ -111,13 +145,19 @@ Expected<FrameGeometry> geometryOf(const Ifd& ifd) {
     g.bits = ifd.u32(tag::BitsPerSample).value_or(16);
     g.compression = ifd.u32(tag::Compression).value_or(1);
     if (ifd.u32(tag::SamplesPerPixel).value_or(1) != 1) return makeError(ErrorCode::Unsupported, "SamplesPerPixel != 1");
+    if (ifd.u32(tag::SampleFormat).value_or(1) != 1)
+        return makeError(ErrorCode::Unsupported, "floating-point or signed DNG samples are not supported");
     if (!g.width || !g.height) return makeError(ErrorCode::Format, "missing image dimensions");
+    if (g.bits < 1 || g.bits > 16)
+        return makeError(ErrorCode::Unsupported, "BitsPerSample " + std::to_string(g.bits) + " is not supported");
     if (const Entry* to = ifd.find(tag::TileOffsets)) {
         g.tiled = true;
         g.blockW = ifd.u32(tag::TileWidth).value_or(0);
         g.blockH = ifd.u32(tag::TileLength).value_or(0);
         const Entry* tb = ifd.find(tag::TileByteCounts);
         if (!tb || tb->count != to->count || !g.blockW || !g.blockH) return makeError(ErrorCode::Format, "bad tile tags");
+        g.blocksAcross = (g.width + g.blockW - 1) / g.blockW;
+        g.blocksDown = (g.height + g.blockH - 1) / g.blockH;
         for (uint32_t i = 0; i < to->count; ++i) { g.blockOffsets.push_back(*to->u32(i)); g.blockBytes.push_back(*tb->u32(i)); }
     } else if (const Entry* so = ifd.find(tag::StripOffsets)) {
         g.blockW = g.width;
@@ -125,104 +165,354 @@ Expected<FrameGeometry> geometryOf(const Ifd& ifd) {
         if (g.blockH == 0 || g.blockH > g.height) g.blockH = g.height;
         const Entry* sb = ifd.find(tag::StripByteCounts);
         if (!sb || sb->count != so->count) return makeError(ErrorCode::Format, "bad strip tags");
+        g.blocksAcross = 1;
+        g.blocksDown = (g.height + g.blockH - 1) / g.blockH;
         for (uint32_t i = 0; i < so->count; ++i) { g.blockOffsets.push_back(*so->u32(i)); g.blockBytes.push_back(*sb->u32(i)); }
     } else {
         return makeError(ErrorCode::Format, "no strips or tiles");
     }
+    if (g.blockOffsets.size() < static_cast<size_t>(g.blocksAcross) * g.blocksDown)
+        return makeError(ErrorCode::Format, std::string("too few ") + (g.tiled ? "tiles" : "strips") + " for the image size");
     return g;
 }
 
-// Unpacks `count` big-endian MSB-first packed samples of `bits` each (TIFF uncompressed < 16).
-void unpackBits(const uint8_t* src, size_t srcLen, uint32_t bits, uint32_t count, bool bigEndian16, uint16_t* dst) {
+// The rectangle of the raw image a frame is read from. `declared` is the ActiveArea (whole image
+// when absent). `crop` follows LibRaw, the reference decoder the output must match: the visible
+// image starts at the ActiveArea origin rounded up to an even row/column (CFAPattern stays anchored
+// at the declared origin), and an odd trailing row/column is dropped so the mosaic consists of
+// whole 2x2 cells.
+struct RawRegion {
+    PixelRect declared, crop;
+};
+
+Expected<RawRegion> regionOf(const Ifd& ifd, const FrameGeometry& g) {
+    RawRegion rg;
+    rg.declared = {0, 0, g.height, g.width};
+    if (const Entry* aa = ifd.find(tag::ActiveArea)) {
+        if (aa->count != 4) return makeError(ErrorCode::Format, "ActiveArea must have 4 values");
+        PixelRect d{aa->u32(0).value_or(0), aa->u32(1).value_or(0), aa->u32(2).value_or(0), aa->u32(3).value_or(0)};
+        if (!(d.top < d.bottom && d.left < d.right && d.bottom <= g.height && d.right <= g.width))
+            return makeError(ErrorCode::Format, "ActiveArea lies outside the image");
+        rg.declared = d;
+    }
+    const PixelRect& d = rg.declared;
+    PixelRect& c = rg.crop;
+    c.top = d.top + (d.top & 1u);
+    c.left = d.left + (d.left & 1u);
+    if (c.top >= d.bottom || c.left >= d.right) return makeError(ErrorCode::Unsupported, "active area smaller than 2x2");
+    const uint32_t h = (d.bottom - c.top) & ~1u, w = (d.right - c.left) & ~1u;
+    if (w < 2 || h < 2) return makeError(ErrorCode::Unsupported, "active area smaller than 2x2");
+    c.bottom = c.top + h;
+    c.right = c.left + w;
+    return rg;
+}
+
+// CFA pattern of the cropped mosaic. CFAPattern is relative to the declared ActiveArea origin; the
+// crop starts (crop - declared) rows/columns later.
+Expected<CfaPattern> cfaOf(const Ifd& ifd, const RawRegion& rg) {
+    std::array<int, 4> cols = cfaColors(CfaPattern::RGGB);
+    if (const Entry* dim = ifd.find(tag::CFARepeatPatternDim))
+        if (dim->count != 2 || dim->u32(0).value_or(0) != 2 || dim->u32(1).value_or(0) != 2)
+            return makeError(ErrorCode::Unsupported, "CFA repeat pattern is not 2x2");
+    if (const Entry* cp = ifd.find(tag::CFAPattern)) {
+        if (cp->count != 4) return makeError(ErrorCode::Unsupported, "CFA repeat pattern is not 2x2");
+        // CFAPattern values index CFAPlaneColor (default R, G, B).
+        std::array<int, 3> plane{0, 1, 2};
+        if (const Entry* pc = ifd.find(tag::CFAPlaneColor); pc && pc->count == 3)
+            for (uint32_t i = 0; i < 3; ++i) plane[i] = static_cast<int>(pc->u32(i).value_or(i));
+        for (uint32_t i = 0; i < 4; ++i) {
+            const uint32_t v = cp->u32(i).value_or(9);
+            if (v > 2) return makeError(ErrorCode::Unsupported, "non-RGB CFA pattern");
+            cols[i] = plane[v];
+        }
+    }
+    const uint32_t dx = (rg.crop.left - rg.declared.left) & 1u, dy = (rg.crop.top - rg.declared.top) & 1u;
+    std::array<int, 4> shifted{};
+    for (uint32_t y = 0; y < 2; ++y)
+        for (uint32_t x = 0; x < 2; ++x) shifted[y * 2 + x] = cols[((y + dy) & 1u) * 2 + ((x + dx) & 1u)];
+    auto pat = cfaFromColors(shifted);
+    if (!pat) return makeError(ErrorCode::Unsupported, "non-Bayer CFA pattern");
+    return *pat;
+}
+
+// Smallest bit depth (8..16) that holds `v`.
+uint16_t bitsFor(uint32_t v) {
+    uint16_t bits = 8;
+    while (bits < 16 && v > (1u << bits) - 1u) ++bits;
+    return bits;
+}
+
+// Sample levels of one frame, in the linear (post-LinearizationTable) domain.
+struct Levels {
+    std::vector<uint16_t> lut; // LinearizationTable; empty = codes are linear
+    bool lutMonotonic = true;
+    uint32_t white = 0;
+    uint16_t bits = 16;              // bits of the linear values
+    std::array<uint32_t, 4> black{}; // per site of the cropped mosaic (plane order)
+    // Black that varies inside a CFA site (BlackLevelDeltaH/V, BlackLevel repeat patterns that are
+    // not 1x1/1x2/2x1/2x2) cannot be written as a 2x2 BlackLevel, so it is folded into the
+    // samples: value' = value - (black(x, y) - black[site]).
+    bool fold = false;
+    uint32_t repRows = 1, repCols = 1;
+    std::vector<double> rep;    // BlackLevel repeat pattern, anchored at the crop origin
+    std::vector<double> dh, dv; // BlackLevelDeltaH/V per cropped column / row (0 if absent)
+    double blackAt(uint32_t x, uint32_t y) const { return rep[(y % repRows) * repCols + x % repCols] + dh[x] + dv[y]; }
+};
+
+Expected<Levels> levelsOf(const Ifd& ifd, const FrameGeometry& g, const RawRegion& rg) {
+    Levels lv;
+    if (const Entry* lt = ifd.find(tag::LinearizationTable); lt && lt->count) {
+        const uint32_t n = std::min<uint32_t>(lt->count, 65536);
+        lv.lut.resize(n);
+        for (uint32_t i = 0; i < n; ++i) lv.lut[i] = static_cast<uint16_t>(std::min<uint32_t>(lt->u32(i).value_or(0), 65535));
+        lv.lutMonotonic = std::is_sorted(lv.lut.begin(), lv.lut.end());
+    }
+    const uint32_t lutMax = lv.lut.empty() ? 0 : *std::max_element(lv.lut.begin(), lv.lut.end());
+    // WhiteLevel is a linear-domain value; without it LibRaw uses the table maximum, or 2^bits-1.
+    const uint32_t defWhite = lv.lut.empty() ? (1u << g.bits) - 1u : lutMax;
+    lv.white = std::clamp<uint32_t>(ifd.u32(tag::WhiteLevel).value_or(defWhite), 1, 65535);
+    lv.bits = bitsFor(lv.lut.empty() ? lv.white : lutMax);
+
+    // BlackLevel repeat pattern. LibRaw anchors it at its visible origin, which is the crop
+    // origin (rounded up to even); for the usual 2x2 pattern that is the same as the raw origin.
+    const Entry* bl = ifd.find(tag::BlackLevel);
+    if (const Entry* rd = ifd.find(tag::BlackLevelRepeatDim); rd && rd->count >= 2) {
+        lv.repRows = rd->u32(0).value_or(1);
+        lv.repCols = rd->u32(1).value_or(1);
+    } else if (bl && bl->count == 4) {
+        lv.repRows = lv.repCols = 2; // four values without BlackLevelRepeatDim: per CFA site
+    }
+    if (lv.repRows < 1 || lv.repCols < 1 || lv.repRows > 64 || lv.repCols > 64)
+        return makeError(ErrorCode::Unsupported, "BlackLevelRepeatDim out of range");
+    lv.rep.assign(static_cast<size_t>(lv.repRows) * lv.repCols, 0.0);
+    if (bl && bl->count) {
+        const bool full = bl->count >= lv.rep.size();
+        for (size_t i = 0; i < lv.rep.size(); ++i) lv.rep[i] = bl->real(full ? static_cast<uint32_t>(i) : 0).value_or(0.0);
+    }
+    // BlackLevelDeltaH/V are indexed from the declared ActiveArea origin.
+    const PixelRect& c = rg.crop;
+    lv.dh.assign(c.width(), 0.0);
+    lv.dv.assign(c.height(), 0.0);
+    if (const Entry* e = ifd.find(tag::BlackLevelDeltaH))
+        for (uint32_t x = 0; x < c.width(); ++x)
+            if (const uint32_t i = x + c.left - rg.declared.left; i < e->count) lv.dh[x] = e->real(i).value_or(0.0);
+    if (const Entry* e = ifd.find(tag::BlackLevelDeltaV))
+        for (uint32_t y = 0; y < c.height(); ++y)
+            if (const uint32_t i = y + c.top - rg.declared.top; i < e->count) lv.dv[y] = e->real(i).value_or(0.0);
+
+    // Per-site black: the mean of black(x, y) over the site. Deltas contribute their overall mean
+    // (as LibRaw adds them); anything that varies inside a site is folded into the samples.
+    const auto mean = [](const std::vector<double>& v) {
+        double s = 0.0;
+        for (double x : v) s += x;
+        return v.empty() ? 0.0 : s / static_cast<double>(v.size());
+    };
+    const double mh = mean(lv.dh), mv = mean(lv.dv);
+    bool varies = false;
+    for (double v : lv.dh) varies |= v != mh;
+    for (double v : lv.dv) varies |= v != mv;
+    for (uint32_t s = 0; s < 4; ++s) {
+        const uint32_t sx = s & 1u, sy = s >> 1;
+        double sum = 0.0, first = 0.0;
+        uint64_t n = 0;
+        for (uint32_t a = 0; a < lv.repRows; ++a) {
+            // rows y of parity sy with y % repRows == a, within the cropped height
+            uint64_t ny = 0;
+            for (uint32_t y = a; y < std::min<uint32_t>(c.height(), 2 * lv.repRows); y += lv.repRows) ny += (y & 1u) == sy;
+            for (uint32_t b = 0; b < lv.repCols; ++b) {
+                uint64_t nx = 0;
+                for (uint32_t x = b; x < std::min<uint32_t>(c.width(), 2 * lv.repCols); x += lv.repCols) nx += (x & 1u) == sx;
+                if (!ny || !nx) continue;
+                const double v = lv.rep[static_cast<size_t>(a) * lv.repCols + b];
+                if (n == 0) first = v;
+                varies |= v != first;
+                sum += v * static_cast<double>(ny * nx);
+                n += ny * nx;
+            }
+        }
+        const double siteMean = (n ? sum / static_cast<double>(n) : 0.0) + mh + mv;
+        lv.black[s] = static_cast<uint32_t>(std::lround(std::clamp(siteMean, 0.0, 65535.0)));
+    }
+    lv.fold = varies;
+    return lv;
+}
+
+// Unpacks `count` samples of `bits` each from one row (TIFF uncompressed): 8/16-bit as bytes or
+// words in the file's byte order, other depths MSB-first packed (FillOrder 1, as DNG requires).
+void unpackRow(const uint8_t* src, uint32_t bits, uint32_t count, bool bigEndian16, uint16_t* dst) {
     if (bits == 16) {
-        for (uint32_t i = 0; i < count && 2 * i + 1 < srcLen; ++i)
+        for (uint32_t i = 0; i < count; ++i)
             dst[i] = bigEndian16 ? static_cast<uint16_t>((src[2 * i] << 8) | src[2 * i + 1])
                                  : static_cast<uint16_t>(src[2 * i] | (src[2 * i + 1] << 8));
         return;
     }
     if (bits == 8) {
-        for (uint32_t i = 0; i < count && i < srcLen; ++i) dst[i] = src[i];
+        for (uint32_t i = 0; i < count; ++i) dst[i] = src[i];
         return;
     }
     uint64_t acc = 0;
-    int nbits = 0;
+    uint32_t nbits = 0;
     size_t pos = 0;
     for (uint32_t i = 0; i < count; ++i) {
-        while (nbits < static_cast<int>(bits) && pos < srcLen) { acc = (acc << 8) | src[pos++]; nbits += 8; }
-        if (nbits < static_cast<int>(bits)) { dst[i] = 0; continue; }
-        dst[i] = static_cast<uint16_t>((acc >> (nbits - bits)) & ((1u << bits) - 1));
-        nbits -= static_cast<int>(bits);
-        acc &= (nbits ? (1ull << nbits) - 1 : 0);
+        while (nbits < bits) { acc = (acc << 8) | src[pos++]; nbits += 8; }
+        dst[i] = static_cast<uint16_t>((acc >> (nbits - bits)) & ((1u << bits) - 1u));
+        nbits -= bits;
+        acc &= (1ull << nbits) - 1ull;
     }
 }
 
-Expected<void> decodeFrameData(const Reader& r, const Ifd& ifd, const FrameGeometry& g, BayerFrame& out) {
-    (void)ifd; // geometry already extracted; kept for symmetry with the strip/tile readers
-    out.data.resize(static_cast<size_t>(g.width) * g.height);
-    const uint32_t blocksX = g.tiled ? (g.width + g.blockW - 1) / g.blockW : 1;
+// Decodes the strips/tiles that overlap `crop` straight into `out` (crop.width() x crop.height()).
+Expected<void> decodeFrameData(const Reader& r, const FrameGeometry& g, const PixelRect& crop, std::vector<uint16_t>& out) {
+    if (g.compression != 1 && g.compression != 7)
+        return makeError(ErrorCode::Unsupported, "DNG compression " + std::to_string(g.compression) + " not supported");
+    const uint32_t ow = crop.width();
+    out.assign(static_cast<size_t>(ow) * crop.height(), 0);
     const auto& bytes = r.bytes();
-    for (size_t b = 0; b < g.blockOffsets.size(); ++b) {
-        const uint64_t off = g.blockOffsets[b], len = g.blockBytes[b];
-        if (off + len > bytes.size()) return makeError(ErrorCode::Format, "block data out of range");
-        const uint32_t bx = static_cast<uint32_t>(b % blocksX), by = static_cast<uint32_t>(b / blocksX);
-        const uint32_t x0 = bx * g.blockW, y0 = by * g.blockH;
-        if (y0 >= g.height) break;
-        const uint32_t rows = std::min(g.blockH, g.height - y0);
-        const uint32_t cols = std::min(g.blockW, g.width - x0);
-        if (g.compression == 7) {
-            R3DSS_TRY_ASSIGN(img, ljpeg::decode(bytes.data() + off, static_cast<size_t>(len)));
-            // The LJPEG stream covers blockW x blockH samples (components folded into width).
-            if (static_cast<uint64_t>(img.width) * img.height < static_cast<uint64_t>(g.blockW) * g.blockH)
-                return makeError(ErrorCode::Format, "LJPEG tile smaller than tile geometry");
-            // Streams may be laid out as blockW*blockH samples with any component folding; treat
-            // the decoded samples as a flat blockW x blockH raster.
-            for (uint32_t y = 0; y < rows; ++y)
-                std::memcpy(out.data.data() + static_cast<size_t>(y0 + y) * g.width + x0,
-                            img.samples.data() + static_cast<size_t>(y) * g.blockW, cols * sizeof(uint16_t));
-        } else if (g.compression == 1) {
-            std::vector<uint16_t> tmp(static_cast<size_t>(g.blockW) * rows);
-            const uint64_t need = (static_cast<uint64_t>(g.blockW) * rows * g.bits + 7) / 8;
-            unpackBits(bytes.data() + off, static_cast<size_t>(std::min<uint64_t>(len, need)), g.bits, g.blockW * rows,
-                       r.bigEndian(), tmp.data());
-            for (uint32_t y = 0; y < rows; ++y)
-                std::memcpy(out.data.data() + static_cast<size_t>(y0 + y) * g.width + x0,
-                            tmp.data() + static_cast<size_t>(y) * g.blockW, cols * sizeof(uint16_t));
-        } else {
-            return makeError(ErrorCode::Unsupported, "DNG compression " + std::to_string(g.compression) + " not supported");
+    const char* kind = g.tiled ? "tile" : "strip";
+
+    std::vector<size_t> todo; // blocks that overlap the crop
+    for (uint32_t by = 0; by < g.blocksDown; ++by) {
+        const uint32_t y0 = by * g.blockH, rows = std::min(g.blockH, g.height - y0);
+        if (y0 + rows <= crop.top || y0 >= crop.bottom) continue;
+        for (uint32_t bx = 0; bx < g.blocksAcross; ++bx) {
+            const uint32_t x0 = bx * g.blockW, cols = std::min(g.blockW, g.width - x0);
+            if (x0 + cols <= crop.left || x0 >= crop.right) continue;
+            todo.push_back(static_cast<size_t>(by) * g.blocksAcross + bx);
         }
     }
+    std::vector<std::string> errors(todo.size());
+    auto decodeBlock = [&](size_t k) {
+        const size_t b = todo[k];
+        const uint32_t bx = static_cast<uint32_t>(b % g.blocksAcross), by = static_cast<uint32_t>(b / g.blocksAcross);
+        const uint32_t x0 = bx * g.blockW, y0 = by * g.blockH;
+        const uint32_t rows = std::min(g.blockH, g.height - y0), cols = std::min(g.blockW, g.width - x0);
+        const uint64_t off = g.blockOffsets[b], len = g.blockBytes[b];
+        const std::string where = std::string(kind) + " " + std::to_string(b);
+        if (off > bytes.size() || len > bytes.size() - off) { errors[k] = where + ": data lies beyond the end of the file"; return; }
+        std::vector<uint16_t> tmp;
+        ljpeg::Image img;
+        const uint16_t* src = nullptr;
+        size_t stride = 0;
+        if (g.compression == 7) {
+            auto dec = ljpeg::decode(bytes.data() + off, static_cast<size_t>(len));
+            if (!dec) { errors[k] = where + ": " + dec.error().message; return; }
+            img = std::move(*dec);
+            // The stream normally is blockW samples wide (components folded into the width). Other
+            // encoders fold rows differently (e.g. 2*blockW x blockH/2); the samples are then in
+            // raster order of the block, as LibRaw and the DNG SDK read them. Anything else is an
+            // error, never a copy with the wrong stride.
+            const uint64_t n = static_cast<uint64_t>(img.width) * img.height;
+            if (img.width == g.blockW && img.height >= rows) {
+                stride = img.width;
+            } else if (n == static_cast<uint64_t>(g.blockW) * rows || n == static_cast<uint64_t>(g.blockW) * g.blockH) {
+                stride = g.blockW;
+            } else {
+                errors[k] = where + ": lossless JPEG stream is " + std::to_string(img.width) + "x" + std::to_string(img.height) +
+                            " samples, which does not fit the " + std::to_string(g.blockW) + "x" +
+                            std::to_string(g.tiled ? g.blockH : rows) + " " + kind;
+                return;
+            }
+            src = img.samples.data();
+        } else {
+            // TIFF: every row of a strip or tile starts on a byte boundary.
+            const uint64_t rowBytes = (static_cast<uint64_t>(g.blockW) * g.bits + 7) / 8;
+            if (len < rowBytes * rows) { errors[k] = where + ": data truncated"; return; }
+            tmp.resize(static_cast<size_t>(g.blockW) * rows);
+            for (uint32_t y = 0; y < rows; ++y)
+                unpackRow(bytes.data() + off + y * rowBytes, g.bits, g.blockW, r.bigEndian(), tmp.data() + static_cast<size_t>(y) * g.blockW);
+            src = tmp.data();
+            stride = g.blockW;
+        }
+        const uint32_t ys = std::max(y0, crop.top), ye = std::min(y0 + rows, crop.bottom);
+        const uint32_t xs = std::max(x0, crop.left), xe = std::min(x0 + cols, crop.right);
+        for (uint32_t y = ys; y < ye; ++y)
+            std::memcpy(out.data() + static_cast<size_t>(y - crop.top) * ow + (xs - crop.left),
+                        src + static_cast<size_t>(y - y0) * stride + (xs - x0), (xe - xs) * sizeof(uint16_t));
+    };
+    auto pool = sharedThreadPool();
+    if (pool && pool->size() > 1 && todo.size() > 1) pool->parallelFor(todo.size(), decodeBlock);
+    else for (size_t k = 0; k < todo.size(); ++k) decodeBlock(k);
+    for (const auto& e : errors)
+        if (!e.empty()) return makeError(ErrorCode::Format, e);
     return {};
 }
 
-Expected<void> readClipInfoFromIfd(const Reader& r, const Ifd& ifd, ClipInfo& ci, Rational* fpsOut) {
+// Maps codes through the LinearizationTable and folds intra-site black variation into the samples.
+void applyLevels(const Levels& lv, uint32_t width, uint32_t height, std::vector<uint16_t>& data) {
+    if (!lv.lut.empty()) {
+        const size_t last = lv.lut.size() - 1;
+        for (auto& v : data) v = lv.lut[std::min<size_t>(v, last)];
+    }
+    if (lv.fold) {
+        const double maxv = static_cast<double>((1u << lv.bits) - 1u);
+        for (uint32_t y = 0; y < height; ++y) {
+            uint16_t* row = data.data() + static_cast<size_t>(y) * width;
+            for (uint32_t x = 0; x < width; ++x) {
+                const double site = static_cast<double>(lv.black[(x & 1u) + 2 * (y & 1u)]);
+                const double v = static_cast<double>(row[x]) - (lv.blackAt(x, y) - site);
+                row[x] = static_cast<uint16_t>(std::lround(std::clamp(v, 0.0, maxv)));
+            }
+        }
+    }
+}
+
+// Everything readFrame needs to know about one frame's raw IFD.
+struct FrameLayout {
+    FrameGeometry g;
+    RawRegion region;
+    CfaPattern cfa = CfaPattern::RGGB;
+    Levels levels;
+};
+
+Expected<FrameLayout> layoutOf(const Ifd& ifd) {
+    FrameLayout fl;
     R3DSS_TRY_ASSIGN(g, geometryOf(ifd));
-    ci.width = g.width;
-    ci.height = g.height;
-    if (ci.width & 1u || ci.height & 1u) return makeError(ErrorCode::Unsupported, "odd DNG dimensions");
-    // Bit depth: prefer WhiteLevel to infer the real sensor depth, fall back to BitsPerSample.
-    ci.white = ifd.u32(tag::WhiteLevel).value_or((1u << std::min<uint32_t>(16, g.bits)) - 1);
-    uint16_t bits = 16;
-    while (bits > 8 && (1u << (bits - 1)) > ci.white) --bits;
-    ci.bits = bits;
-    if (const Entry* bl = ifd.find(tag::BlackLevel)) {
-        const uint32_t n = bl->count;
-        for (uint32_t i = 0; i < 4; ++i) {
-            auto v = bl->real(n == 4 ? i : 0);
-            ci.black[i] = static_cast<uint32_t>(std::lround(v.value_or(0.0)));
-        }
+    fl.g = std::move(g);
+    R3DSS_TRY_ASSIGN(rg, regionOf(ifd, fl.g));
+    fl.region = rg;
+    R3DSS_TRY_ASSIGN(cfa, cfaOf(ifd, fl.region));
+    fl.cfa = cfa;
+    R3DSS_TRY_ASSIGN(lv, levelsOf(ifd, fl.g, fl.region));
+    fl.levels = std::move(lv);
+    return fl;
+}
+
+Expected<void> readClipInfoFromIfd(const Reader& r, const Ifd& ifd, ClipInfo& ci, Rational* fpsOut) {
+    R3DSS_TRY_ASSIGN(layout, layoutOf(ifd));
+    const PixelRect& declared = layout.region.declared;
+    const PixelRect& crop = layout.region.crop;
+    ci.rawWidth = layout.g.width;
+    ci.rawHeight = layout.g.height;
+    ci.declaredActiveArea = declared;
+    ci.activeArea = crop;
+    ci.width = crop.width();
+    ci.height = crop.height();
+    if (!(crop == declared))
+        R3DSS_LOG_INFO("cdng", "reading the " + std::to_string(ci.width) + "x" + std::to_string(ci.height) +
+                                   " mosaic at row " + std::to_string(crop.top) + ", column " + std::to_string(crop.left) +
+                                   " of the " + std::to_string(layout.g.width) + "x" + std::to_string(layout.g.height) +
+                                   " raw image (ActiveArea [" + std::to_string(declared.top) + ", " + std::to_string(declared.left) + ", " +
+                                   std::to_string(declared.bottom) + ", " + std::to_string(declared.right) +
+                                   "], moved to an even origin and an even size)");
+    const Levels& lv = layout.levels;
+    ci.white = lv.white;
+    ci.bits = lv.bits;
+    ci.black = lv.black;
+    ci.cfa = layout.cfa;
+    ci.meta.sampleEncoding = {};
+    if (!lv.lut.empty() && lv.lutMonotonic) {
+        ci.meta.sampleEncoding.bitsPerSample = static_cast<uint16_t>(layout.g.bits);
+        ci.meta.sampleEncoding.linearizationTable = lv.lut;
+    } else if (!lv.lut.empty()) {
+        // An output cannot re-encode to a table that is not monotonic: it gets linear values.
+        ci.meta.sampleEncoding.bitsPerSample = bitsFor(lv.white);
+        R3DSS_LOG_INFO("cdng", "LinearizationTable is not monotonic; the output stores linear values without a table");
+    } else {
+        ci.meta.sampleEncoding.bitsPerSample = static_cast<uint16_t>(layout.g.bits);
     }
-    // CFA
-    if (const Entry* cp = ifd.find(tag::CFAPattern)) {
-        if (cp->count == 4) {
-            std::array<int, 4> cols{};
-            for (uint32_t i = 0; i < 4; ++i) cols[i] = static_cast<int>(cp->u32(i).value_or(1));
-            auto pat = cfaFromColors(cols);
-            if (!pat) return makeError(ErrorCode::Unsupported, "non-Bayer CFA pattern");
-            ci.cfa = *pat;
-        } else {
-            return makeError(ErrorCode::Unsupported, "CFA repeat pattern is not 2x2");
-        }
-    }
+    if (lv.fold)
+        R3DSS_LOG_INFO("cdng", "black level varies inside a CFA site (BlackLevelDeltaH/V or a large BlackLevel repeat); "
+                               "the variation is subtracted from the samples and a per-site black is written");
     ci.meta.cameraMake = ifd.ascii(tag::Make);
     ci.meta.cameraModel = ifd.ascii(tag::Model);
     if (ci.meta.cameraModel.empty()) ci.meta.cameraModel = ifd.ascii(tag::UniqueCameraModel);
@@ -323,18 +613,21 @@ public:
         Reader r;
         R3DSS_TRY(r.open(frames_[static_cast<size_t>(index)]));
         R3DSS_TRY_ASSIGN(ifd, findRawIfd(r));
-        R3DSS_TRY_ASSIGN(g, geometryOf(ifd));
-        if (g.width != info_.width || g.height != info_.height)
+        R3DSS_TRY_ASSIGN(fl, layoutOf(ifd));
+        const PixelRect& c = fl.region.crop;
+        if (c.width() != info_.width || c.height() != info_.height)
             return makeError(ErrorCode::Format, "frame " + std::to_string(index) + " has a different size");
-        out.width = g.width;
-        out.height = g.height;
-        out.bits = info_.bits;
-        out.cfa = info_.cfa;
-        out.black = info_.black;
-        out.white = info_.white;
+        // Levels, bit depth and CFA phase come from this frame's own tags.
+        out.width = c.width();
+        out.height = c.height();
+        out.bits = std::max(info_.bits, fl.levels.bits);
+        out.cfa = fl.cfa;
+        out.black = fl.levels.black;
+        out.white = fl.levels.white;
         out.index = index;
         out.meta = FrameMetadata{};
-        R3DSS_TRY(decodeFrameData(r, ifd, g, out));
+        R3DSS_TRY(decodeFrameData(r, fl.g, c, out.data));
+        applyLevels(fl.levels, out.width, out.height, out.data);
         if (const Entry* tc = ifd.find(tag::TimeCodes); tc && tc->count >= 8)
             out.meta.timecode = decodeSmpteTimecode(tc->data.data(), info_.fps);
         else if (info_.startTimecode)
@@ -365,6 +658,49 @@ private:
 };
 
 // ---------------------------------------------------------------------------------------------
+// LJ92 tile layout (I10). A tile is never wider than the image: LibRaw-family decoders wrap the
+// rows of the first tile column at min(TileWidth, ImageWidth), so a single padded column wider than
+// the image shears every row after the first. Tiles are at most 256 wide (a multiple of 16 that
+// fits the image) and at most `maxRows` (a multiple of 16) tall; only the last column/row is padded.
+// Images narrower than 16 are written as one strip, whose stream width is the image width.
+struct TileLayout {
+    uint32_t tileW = 0, tileH = 0, across = 1, down = 1;
+    bool strip = false;
+};
+
+TileLayout tileLayoutFor(uint32_t width, uint32_t height, uint32_t maxRows) {
+    TileLayout t;
+    if (width < 16) {
+        t.strip = true;
+        t.tileW = width;
+        t.tileH = height;
+        return t;
+    }
+    t.tileW = std::min<uint32_t>(256, width / 16 * 16);
+    const uint32_t rows = std::max<uint32_t>(16, (maxRows + 15) / 16 * 16);
+    t.tileH = std::min<uint32_t>(rows, (height + 15) / 16 * 16);
+    t.across = (width + t.tileW - 1) / t.tileW;
+    t.down = (height + t.tileH - 1) / t.tileH;
+    return t;
+}
+
+// Nearest code of a non-decreasing LinearizationTable for every 16-bit linear value (ties go to
+// the lower code; values above the table map to its last code).
+std::vector<uint16_t> inverseTable(const std::vector<uint16_t>& t) {
+    std::vector<uint16_t> inv(65536);
+    const size_t n = t.size();
+    size_t i = 0; // first code whose value is >= v
+    for (uint32_t v = 0; v < 65536; ++v) {
+        while (i < n && t[i] < v) ++i;
+        size_t best;
+        if (i == n) best = n - 1;
+        else if (i == 0 || t[i] == v) best = i;
+        else best = (v - t[i - 1] <= t[i] - v) ? i - 1 : i;
+        inv[v] = static_cast<uint16_t>(best);
+    }
+    return inv;
+}
+
 class CdngWriter final : public ICodecWriter {
 public:
     explicit CdngWriter(CdngWriterOptions o) : opts_(std::move(o)) {}
@@ -376,6 +712,18 @@ public:
         fs::create_directories(cfg.dest, ec);
         if (!fs::is_directory(cfg.dest, ec)) return makeError(ErrorCode::Io, "cannot create " + toUtf8(cfg.dest));
         clipName_ = cfg.clipName.empty() ? toUtf8(cfg.dest.filename()) : cfg.clipName;
+        // Keep the source's LinearizationTable (I9): frames arrive linear and are re-encoded to the
+        // nearest table code, so the output keeps the source's code depth and tone design.
+        table_.clear();
+        inverse_.clear();
+        if (const auto& t = cfg.meta.sampleEncoding.linearizationTable; !t.empty()) {
+            if (std::is_sorted(t.begin(), t.end())) {
+                table_ = t;
+                inverse_ = inverseTable(t);
+            } else {
+                R3DSS_LOG_INFO("cdng", "LinearizationTable is not monotonic; writing linear values without a table");
+            }
+        }
         if (cfg.audio.present()) {
             wavPath_ = cfg.dest / fromUtf8(clipName_ + ".wav");
             R3DSS_TRY(wav_.begin(wavPath_, cfg.audio));
@@ -394,28 +742,43 @@ public:
         Writer::IfdBuilder raw, exif;
         std::vector<uint32_t> offsets, counts;
         const bool lj = opts_.losslessJpeg;
+        // Codes to store: the linear values, or their nearest LinearizationTable codes.
+        const uint16_t* data = f.data.data();
+        std::vector<uint16_t> codes;
+        if (!inverse_.empty()) {
+            codes.resize(f.data.size());
+            for (size_t i = 0; i < codes.size(); ++i) codes[i] = inverse_[f.data[i]];
+            data = codes.data();
+        }
+        // Stored depth: the source's BitsPerSample when known (else 16), never fewer bits than the
+        // data needs.
+        uint16_t bps = cfg_.meta.sampleEncoding.bitsPerSample ? cfg_.meta.sampleEncoding.bitsPerSample : uint16_t(16);
+        {
+            const uint16_t maxv = f.data.empty() ? uint16_t(0) : *std::max_element(data, data + f.data.size());
+            bps = std::clamp<uint16_t>(bps, 2, 16);
+            while (bps < 16 && maxv > (1u << bps) - 1u) ++bps;
+        }
         if (lj) {
-            const uint32_t tileH = std::max<uint32_t>(16, (opts_.tileRows + 15) / 16 * 16);
-            const uint32_t tileW = (f.width + 15) / 16 * 16;
-            const uint32_t nTiles = (f.height + tileH - 1) / tileH;
+            const TileLayout tl = tileLayoutFor(f.width, f.height, opts_.tileRows);
+            const size_t nTiles = static_cast<size_t>(tl.across) * tl.down;
             std::vector<std::vector<uint8_t>> encoded(nTiles);
             std::vector<std::string> errors(nTiles);
             auto encodeTile = [&](size_t t) {
-                const uint32_t y0 = static_cast<uint32_t>(t) * tileH;
-                const uint32_t rows = std::min(tileH, f.height - y0);
-                std::vector<uint16_t> tile(static_cast<size_t>(tileW) * tileH);
-                for (uint32_t y = 0; y < tileH; ++y) {
-                    const uint32_t sy = y0 + std::min(y, rows - 1);
-                    const uint16_t* src = f.data.data() + static_cast<size_t>(sy) * f.width;
-                    uint16_t* dst = tile.data() + static_cast<size_t>(y) * tileW;
-                    std::memcpy(dst, src, f.width * sizeof(uint16_t));
-                    for (uint32_t x = f.width; x < tileW; ++x) dst[x] = src[f.width - 1];
+                const uint32_t x0 = static_cast<uint32_t>(t % tl.across) * tl.tileW;
+                const uint32_t y0 = static_cast<uint32_t>(t / tl.across) * tl.tileH;
+                const uint32_t cols = std::min(tl.tileW, f.width - x0), rows = std::min(tl.tileH, f.height - y0);
+                std::vector<uint16_t> tile(static_cast<size_t>(tl.tileW) * tl.tileH);
+                for (uint32_t y = 0; y < tl.tileH; ++y) { // edge-replicate the padding of the last column/row
+                    const uint16_t* src = data + static_cast<size_t>(y0 + std::min(y, rows - 1)) * f.width + x0;
+                    uint16_t* dst = tile.data() + static_cast<size_t>(y) * tl.tileW;
+                    std::memcpy(dst, src, cols * sizeof(uint16_t));
+                    for (uint32_t x = cols; x < tl.tileW; ++x) dst[x] = src[cols - 1];
                 }
                 ljpeg::EncodeParams ep;
-                ep.precision = 16;
+                ep.precision = bps;
                 ep.components = 2;
                 ep.predictor = 1;
-                auto enc = ljpeg::encode(tile.data(), tileW, tileH, ep);
+                auto enc = ljpeg::encode(tile.data(), tl.tileW, tl.tileH, ep);
                 if (enc) encoded[t] = std::move(*enc);
                 else errors[t] = enc.error().toString();
             };
@@ -427,16 +790,22 @@ public:
                 offsets.push_back(static_cast<uint32_t>(w.appendData(encoded[t])));
                 counts.push_back(static_cast<uint32_t>(encoded[t].size()));
             }
-            raw.setU32(tag::TileWidth, {tileW});
-            raw.setU32(tag::TileLength, {tileH});
-            raw.setU32(tag::TileOffsets, offsets);
-            raw.setU32(tag::TileByteCounts, counts);
+            if (tl.strip) {
+                raw.setU32(tag::StripOffsets, offsets);
+                raw.setU32(tag::RowsPerStrip, {f.height});
+                raw.setU32(tag::StripByteCounts, counts);
+            } else {
+                raw.setU32(tag::TileWidth, {tl.tileW});
+                raw.setU32(tag::TileLength, {tl.tileH});
+                raw.setU32(tag::TileOffsets, offsets);
+                raw.setU32(tag::TileByteCounts, counts);
+            }
             raw.setU16(tag::Compression, {7});
         } else {
             std::vector<uint8_t> bytes(f.byteSize());
             for (size_t i = 0; i < f.data.size(); ++i) {
-                bytes[2 * i] = static_cast<uint8_t>(f.data[i]);
-                bytes[2 * i + 1] = static_cast<uint8_t>(f.data[i] >> 8);
+                bytes[2 * i] = static_cast<uint8_t>(data[i]);
+                bytes[2 * i + 1] = static_cast<uint8_t>(data[i] >> 8);
             }
             offsets.push_back(static_cast<uint32_t>(w.appendData(bytes)));
             counts.push_back(static_cast<uint32_t>(bytes.size()));
@@ -448,7 +817,8 @@ public:
         raw.setU32(tag::NewSubFileType, {0});
         raw.setU32(tag::ImageWidth, {f.width});
         raw.setU32(tag::ImageLength, {f.height});
-        raw.setU16(tag::BitsPerSample, {16});
+        raw.setU16(tag::BitsPerSample, {lj ? bps : uint16_t(16)});
+        if (!table_.empty()) raw.setU16(tag::LinearizationTable, table_);
         raw.setU16(tag::Photometric, {kPhotometricCfa});
         raw.setU16(tag::Orientation, {1});
         raw.setU16(tag::SamplesPerPixel, {1});
@@ -558,6 +928,7 @@ private:
     wav::StreamWriter wav_;
     int64_t frameNo_ = 0;
     WriteSummary summary_;
+    std::vector<uint16_t> table_, inverse_; // LinearizationTable to write and its nearest-code inverse
 };
 
 class CdngFactory final : public ICodecFactory {

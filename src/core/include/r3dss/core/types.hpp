@@ -146,7 +146,16 @@ struct OpaqueBlob {
     std::vector<uint8_t> bytes;
 };
 
+// How a source stored its sample values. Readers always deliver linear values in BayerFrame; a
+// writer that can store the same encoding uses this to keep the source's code depth and tone
+// curve (CinemaDNG: BitsPerSample and LinearizationTable).
+struct SampleEncoding {
+    uint16_t bitsPerSample = 0;               // stored code depth (0 = unknown: writer default)
+    std::vector<uint16_t> linearizationTable; // code -> linear value, non-decreasing; empty = linear codes
+};
+
 struct ClipMetadata {
+    SampleEncoding sampleEncoding;
     std::string cameraMake, cameraModel, cameraSerial, firmware;
     std::optional<uint32_t> iso;
     std::optional<double> exposureTimeSec;

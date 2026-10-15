@@ -33,12 +33,26 @@ struct Capabilities {
 enum class SourceKind : uint8_t { Unknown, CinemaDng, RedcodeRaw, NikonR3dNe, NikonNev };
 const char* sourceKindName(SourceKind k);
 
+// A rectangle of a stored raw image in raw pixel coordinates (DNG ActiveArea order).
+struct PixelRect {
+    uint32_t top = 0, left = 0, bottom = 0, right = 0;
+    uint32_t width() const { return right - left; }
+    uint32_t height() const { return bottom - top; }
+    bool operator==(const PixelRect&) const = default;
+};
+
 struct ClipInfo {
     Format format = Format::Unknown;
     SourceKind sourceKind = SourceKind::Unknown;
     std::string sourceLabel; // e.g. "REDCODE RAW (KOMODO 6K)"; shown as the GUI Format column
     std::filesystem::path path;
-    uint32_t width = 0, height = 0;
+    uint32_t width = 0, height = 0; // size of the frames readFrame() returns (even)
+    // Where those frames come from in the stored raw image (CinemaDNG; 0 when a reader does not
+    // report it). declaredActiveArea is the source's ActiveArea (the whole image when absent);
+    // activeArea is the rectangle actually returned: LibRaw's visible area (origin rounded up to
+    // even) with an odd trailing row/column dropped, so activeArea.width() == width.
+    uint32_t rawWidth = 0, rawHeight = 0;
+    PixelRect declaredActiveArea, activeArea;
     uint16_t bits = 12;
     CfaPattern cfa = CfaPattern::RGGB;
     std::array<uint32_t, 4> black{0, 0, 0, 0};
