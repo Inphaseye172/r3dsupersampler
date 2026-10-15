@@ -1,10 +1,13 @@
 #include "r3dss/pipeline/clip_converter.hpp"
 #include "r3dss/core/paths.hpp"
 #include <atomic>
+#include <cmath>
+#include <cstdio>
 #include <map>
 #include <mutex>
 #include <thread>
 #include "r3dss/core/logger.hpp"
+#include "r3dss/pipeline/output_claim.hpp"
 #include "r3dss/ratecontrol/ratecontrol.hpp"
 #include "r3dss/resample/resampler.hpp"
 #if defined(R3DSS_HAVE_CUDA)
@@ -89,6 +92,33 @@ private:
     CancelRegistration reg_; // unregistered before tok_ is released
 };
 
+// Undoes a started output unless disarmed: aborts the writer, then removes the claimed partial output.
+struct OutputGuard {
+    codec::ICodecWriter* writer = nullptr;
+    OutputClaim* claim = nullptr;
+    bool armed = true;
+    ~OutputGuard() {
+        if (!armed) return;
+        if (writer) writer->abort();
+        if (claim) claim->discard();
+    }
+};
+
+std::string lowerExt(const fs::path& p) {
+    std::string e = toUtf8(p.extension());
+    for (char& c : e)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return e;
+}
+
+bool isMemoryPath(const fs::path& p) { return toUtf8Generic(p).rfind("mem://", 0) == 0; }
+
+// Maps a path inside `from` to the same relative path inside `to`.
+fs::path rebase(const fs::path& p, const fs::path& from, const fs::path& to) {
+    const fs::path rel = p.lexically_relative(from);
+    return rel.empty() || *rel.begin() == ".." ? p : to / rel;
+}
+
 struct ErrorSlot {
     std::mutex m;
     std::optional<Error> err;
@@ -102,7 +132,34 @@ struct ErrorSlot {
 
 } // namespace
 
-ClipResult convertClip(const ClipJob& job, const JobOptions& options, const ClipRunContext& ctxIn) {
+fs::path clipSourceRoot(const fs::path& sourceIn) {
+    const fs::path source = normaliseSourcePath(sourceIn);
+    if (isMemoryPath(source)) return {};
+    std::error_code ec;
+    if (!fs::is_directory(source, ec) && lowerExt(source) == ".dng") return source.parent_path();
+    return source;
+}
+
+Expected<PlannedOutput> planClipOutput(const ClipJob& jobIn, const JobOptions& options) {
+    const fs::path source = normaliseSourcePath(jobIn.source);
+    auto inFactory = codec::CodecRegistry::instance().probe(source);
+    if (!inFactory) return makeError(ErrorCode::InvalidArgument, "not a recognised raw clip: " + toUtf8(source));
+    PlannedOutput p;
+    p.format = options.outputFormat.value_or(inFactory->format());
+    p.name = jobIn.outputName.empty() ? expandName(options.namingTemplate, clipStem(source), options, p.format) : jobIn.outputName;
+    if (p.name.empty()) return makeError(ErrorCode::InvalidArgument, "empty output name for " + toUtf8(source));
+    if (p.format == codec::Format::Memory) {
+        p.dest = fromUtf8("mem://" + p.name);
+    } else {
+        p.dest = jobIn.outputDir / fromUtf8(p.name);
+        if (p.format != codec::Format::CinemaDNG) p.dest += codec::formatExtension(p.format);
+    }
+    return p;
+}
+
+ClipResult convertClip(const ClipJob& jobIn, const JobOptions& options, const ClipRunContext& ctxIn) {
+    ClipJob job = jobIn;
+    job.source = normaliseSourcePath(jobIn.source); // "C001/" names the clip C001, not ""
     ClipResult res;
     const auto t0 = Clock::now();
     ClipRunContext ctx = ctxIn;
@@ -113,6 +170,8 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
     auto failWith = [&](ClipStatus st, const std::string& msg) {
         res.status = st;
         res.message = msg;
+        res.files.clear(); // nothing of an unfinished output is left on disk
+        res.sidecarCopies.clear();
         finishTime();
         return res;
     };
@@ -147,23 +206,61 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
 
     auto sizeR = resample::planOutputSize(info.width, info.height, options.size, options.customSize,
                                           outFactory->caps().dimAlignment);
-    if (!sizeR) return failWith(ClipStatus::Skipped, sizeR.error().message);
+    if (!sizeR) {
+        // Never upscale: a size larger than the source skips the clip (exit code 3 when nothing is written).
+        if (sizeR.error().code != ErrorCode::Unsupported)
+            return failWith(ClipStatus::Failed, "invalid output size: " + sizeR.error().message);
+        res.skipReason = SkipReason::Other;
+        return failWith(ClipStatus::Skipped, sizeR.error().message);
+    }
     const resample::OutputSize outSize = *sizeR;
     res.outWidth = outSize.width;
     res.outHeight = outSize.height;
-
-    const std::string stem = fs::is_directory(job.source) ? toUtf8(job.source.filename()) : toUtf8(job.source.stem());
-    const std::string name = job.outputName.empty() ? expandName(options.namingTemplate, stem, options, outFmt) : job.outputName;
-    fs::path dest = job.outputDir / fromUtf8(name);
-    if (outFmt != codec::Format::CinemaDNG && outFmt != codec::Format::Memory) dest += codec::formatExtension(outFmt);
-    if (outFmt == codec::Format::Memory) dest = fromUtf8("mem://" + name);
-    res.output = dest;
-    std::error_code ec;
-    if (outFmt != codec::Format::Memory && fs::exists(dest, ec)) {
-        if (!options.overwrite) return failWith(ClipStatus::Skipped, "output already exists: " + toUtf8(dest));
-        fs::remove_all(dest, ec);
+    res.rateControl = outFactory->caps().rateControl;
+    if (options.size == SizePreset::Custom && info.width && info.height && outSize.height) {
+        const double srcAspect = static_cast<double>(info.width) / info.height;
+        const double outAspect = static_cast<double>(outSize.width) / outSize.height;
+        const double change = outAspect / srcAspect - 1.0;
+        if (std::fabs(change) > 0.005) {
+            char buf[256];
+            std::snprintf(buf, sizeof buf,
+                          "output %ux%u has aspect %.3f, the source %ux%u has %.3f (%+.1f%%): the image is %s "
+                          "(anamorphic output, pixels are no longer square)",
+                          outSize.width, outSize.height, outAspect, info.width, info.height, srcAspect, change * 100.0,
+                          change < 0 ? "squeezed horizontally" : "squeezed vertically");
+            res.warnings.push_back(buf);
+            R3DSS_LOG_WARN("convert", toUtf8(job.source) + ": " + buf);
+        }
     }
-    if (outFmt != codec::Format::Memory) fs::create_directories(job.outputDir, ec);
+
+    auto planned = planClipOutput(job, options);
+    if (!planned) return failWith(ClipStatus::Failed, planned.error().message);
+    const std::string name = planned->name;
+    const fs::path finalDest = planned->dest; // where the finished output is published
+    fs::path dest = finalDest;                // where the output is written (the claimed "<finalDest>.partial")
+    res.output = finalDest;
+    const bool onDisk = outFmt != codec::Format::Memory && !isMemoryPath(finalDest);
+    const fs::path srcRoot = clipSourceRoot(job.source);
+    OutputClaim claim;
+    std::error_code ec;
+    if (onDisk) {
+        if (!srcRoot.empty() && (pathsOverlap(finalDest, srcRoot) || pathsOverlap(partialPathFor(finalDest), srcRoot)))
+            return failWith(ClipStatus::Failed, "output " + toUtf8(finalDest) + " would overlap the source " + toUtf8(srcRoot) +
+                                                    ": choose an output folder outside the source clip");
+        if (fs::exists(fs::symlink_status(finalDest, ec)) && !options.overwrite) {
+            res.skipReason = SkipReason::OutputExists;
+            return failWith(ClipStatus::Skipped, "output already exists: " + toUtf8(finalDest));
+        }
+        if (!job.outputDir.empty()) {
+            fs::create_directories(job.outputDir, ec);
+            if (!fs::is_directory(job.outputDir, ec))
+                return failWith(ClipStatus::Failed, "cannot create output folder " + toUtf8(job.outputDir));
+        }
+        auto c = OutputClaim::claim(finalDest, outFmt == codec::Format::CinemaDNG);
+        if (!c) return failWith(ClipStatus::Failed, c.error().message);
+        claim = std::move(*c);
+        dest = claim.partial();
+    }
 
     codec::WriterConfig wc;
     wc.dest = dest;
@@ -181,6 +278,7 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
     wc.meta = info.meta;
     wc.lossless = options.lossless;
     auto writer = outFactory->makeWriter();
+    OutputGuard guard{writer.get(), &claim, true}; // any return before publication removes the partial output
     if (auto b = writer->begin(wc); !b) return failWith(ClipStatus::Failed, "cannot start output: " + b.error().toString());
 
     const ResamplerChoice choice = chooseResampler(options.useGpu);
@@ -200,6 +298,7 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
     std::atomic<int64_t> framesDone{0};
     ratecontrol::VbrController vbr(options.profile);
     double budgetSum = 0.0;
+    const bool rateControl = res.rateControl; // codecs without rate control (CinemaDNG) need no budget
 
     // Reader thread
     std::thread readerThread([&] {
@@ -232,7 +331,7 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
                     errors.set(r.error(), *ctx.cancel);
                     return;
                 }
-                it.stats = ratecontrol::estimateComplexity(*it.frame);
+                if (rateControl) it.stats = ratecontrol::estimateComplexity(*it.frame);
                 const int64_t idx = it.frame->index;
                 if (!ordered.push(idx, std::move(it))) return;
             }
@@ -246,8 +345,11 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
     for (int64_t i = 0; i < N; ++i) {
         auto it = ordered.pop(i);
         if (!it) { writeOk = false; break; }
-        const codec::FrameBudget budget = vbr.next(*it->frame, it->stats);
-        budgetSum += vbr.lastBpp();
+        codec::FrameBudget budget;
+        if (rateControl) {
+            budget = vbr.next(*it->frame, it->stats);
+            budgetSum += vbr.lastBpp();
+        }
         auto st = writer->writeFrame(*it->frame, budget);
         if (!st) {
             errors.set(Error(st.error().code, "write frame " + std::to_string(i) + ": " + st.error().message), *ctx.cancel);
@@ -296,30 +398,71 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
     if (!summary) { writer->abort(); return failWith(ClipStatus::Failed, "finish: " + summary.error().toString()); }
     reader->close();
     res.frames = summary->framesWritten;
-    res.files = summary->files;
     res.outputBytes = summary->totalBytes;
     res.averageBpp = res.frames ? static_cast<double>(res.outputBytes) * 8.0 /
                                       (static_cast<double>(res.frames) * outSize.width * outSize.height)
                                 : 0.0;
-    res.averageBudgetBpp = res.frames ? budgetSum / static_cast<double>(res.frames) : 0.0;
+    res.averageBudgetBpp = rateControl && res.frames ? budgetSum / static_cast<double>(res.frames) : 0.0;
 
     if (options.verify) {
-        report({N, N, 0.0, "verifying"});
+        report({0, N, 0.0, "verifying"});
         Expectation e;
         e.width = outSize.width;
         e.height = outSize.height;
         e.frameCount = N;
         e.fps = info.fps;
         e.audio = info.audio;
-        e.audioSamples = audioSamples;
+        // The source decides how much audio there must be, not what happened to be written.
+        e.audioSamples = info.audio.sampleCount ? info.audio.sampleCount : audioSamples;
+        if (info.audio.present()) e.audioReference = job.source;
         e.startTimecode = info.startTimecode;
+        e.cancel = ctx.cancel;
+        auto lastVerifyReport = Clock::now();
+        e.progress = [&](int64_t done, int64_t total) {
+            const auto now = Clock::now();
+            if (done == total || std::chrono::duration<double>(now - lastVerifyReport).count() >= 0.1) {
+                lastVerifyReport = now;
+                report({done, total, 0.0, "verifying"});
+            }
+        };
         res.verification = verifyOutput(dest, e);
+        if (res.verification.cancelled || ctx.cancel->isCancelled()) return failWith(ClipStatus::Cancelled, "cancelled");
         if (!res.verification.ok) {
             std::string msg = "verification failed:";
             for (const auto& p : res.verification.problems) msg += " " + p + ";";
             return failWith(ClipStatus::Failed, msg);
         }
     }
+
+    // Archive mode: the clip folder's other files go into the output clip folder, verified.
+    std::vector<std::string> sidecarErrors;
+    if (onDisk && outFmt == codec::Format::CinemaDNG && !job.sidecars.empty() && !srcRoot.empty()) {
+        report({N, N, 0.0, "copying"});
+        for (const auto& rel : job.sidecars) {
+            if (ctx.cancel->isCancelled()) return failWith(ClipStatus::Cancelled, "cancelled");
+            if (rel.empty() || rel.is_absolute() || *rel.begin() == "..") {
+                sidecarErrors.push_back("invalid sidecar path " + toUtf8(rel));
+                continue;
+            }
+            auto cr = copyAndVerify(srcRoot / rel, dest / rel, ctx.cancel);
+            if (cr) res.sidecarCopies.push_back(*cr);
+            else if (cr.error().code == ErrorCode::Cancelled) return failWith(ClipStatus::Cancelled, "cancelled");
+            else sidecarErrors.push_back(toUtf8(srcRoot / rel) + ": " + cr.error().toString());
+        }
+    }
+
+    if (ctx.cancel->isCancelled()) return failWith(ClipStatus::Cancelled, "cancelled");
+    if (onDisk) {
+        if (auto c = claim.commit(options.overwrite, {srcRoot}); !c)
+            return failWith(ClipStatus::Failed, "cannot publish the output: " + c.error().message);
+    }
+    guard.armed = false;
+    for (const auto& f : summary->files) res.files.push_back(onDisk ? rebase(f, dest, finalDest) : f);
+    for (auto& c : res.sidecarCopies) {
+        c.dest = rebase(c.dest, dest, finalDest);
+        res.files.push_back(c.dest);
+    }
+    res.copyErrors = sidecarErrors;
     res.status = ClipStatus::Done;
     res.message = "ok";
     finishTime();

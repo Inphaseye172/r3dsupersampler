@@ -71,11 +71,17 @@ std::string batchJobToJson(const BatchJob& b) {
     j["archiveMode"] = b.archiveMode;
     j["options"] = optionsToJson(b.options);
     j["clips"] = json::array();
-    for (const auto& c : b.clips)
-        j["clips"].push_back({{"source", toUtf8Generic(c.source)},
-                              {"outputDir", toUtf8Generic(c.outputDir)},
-                              {"outputName", c.outputName},
-                              {"relativeDir", toUtf8Generic(c.relativeDir)}});
+    for (const auto& c : b.clips) {
+        json cj = {{"source", toUtf8Generic(c.source)},
+                   {"outputDir", toUtf8Generic(c.outputDir)},
+                   {"outputName", c.outputName},
+                   {"relativeDir", toUtf8Generic(c.relativeDir)}};
+        if (!c.sidecars.empty()) {
+            cj["sidecars"] = json::array();
+            for (const auto& s : c.sidecars) cj["sidecars"].push_back(toUtf8Generic(s));
+        }
+        j["clips"].push_back(cj);
+    }
     j["copies"] = json::array();
     for (const auto& c : b.copies) j["copies"].push_back({{"source", toUtf8Generic(c.source)}, {"dest", toUtf8Generic(c.dest)}});
     return j.dump(2, ' ', false, json::error_handler_t::replace);
@@ -99,10 +105,11 @@ Expected<BatchJob> batchJobFromJson(const std::string& text) {
         }
         for (const auto& c : j.value("clips", json::array())) {
             ClipJob cj;
-            cj.source = fromUtf8(c.value("source", ""));
+            cj.source = normaliseSourcePath(fromUtf8(c.value("source", "")));
             cj.outputDir = fromUtf8(c.value("outputDir", ""));
             cj.outputName = c.value("outputName", "");
             cj.relativeDir = fromUtf8(c.value("relativeDir", ""));
+            for (const auto& sc : c.value("sidecars", json::array())) cj.sidecars.push_back(fromUtf8(sc.get<std::string>()));
             b.clips.push_back(cj);
         }
         for (const auto& c : j.value("copies", json::array())) b.copies.push_back({fromUtf8(c.value("source", "")), fromUtf8(c.value("dest", ""))});
