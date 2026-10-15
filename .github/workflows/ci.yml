@@ -9,13 +9,22 @@ on:
   workflow_dispatch:
     inputs:
       cuda:
-        description: "Also build the CUDA resampler on Windows (slow toolkit install)"
+        description: "Build the CUDA resampler on Windows (pushes, PRs and tags always do)"
         type: boolean
-        default: false
+        default: true
       prerelease_tag:
         description: "Publish a developer pre-release under this new tag (must start with dev-); empty = no release"
         type: string
         default: ""
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR supersedes the running check. Tag and manual (release)
+# runs are never cancelled, and a push never cancels a manual run (separate group per event).
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') && github.event_name != 'workflow_dispatch' }}
 
 env:
   # Private: a direct-download URL for the RED R3D SDK zip and a bearer token for it. The SDK is
@@ -29,7 +38,7 @@ jobs:
     name: Linux (engine, CLI, GUI, tests)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -56,7 +65,7 @@ jobs:
           echo "R3DSDK_ROOT=$root" >> "$GITHUB_ENV"
           echo "RED R3D SDK unpacked at $root"
       - name: Cache sample clips
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .deps/samples
           key: samples-v1
@@ -93,7 +102,7 @@ jobs:
         run: python3 scripts/acceptance.py --bin build/linux-ci/src/cli --mode dev --report acceptance-linux.json
       - name: Benchmark (small)
         run: ./build/linux-ci/bench/r3dss-bench --width 3840 --height 2160 --frames 4 --size FHD --json bench-linux.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: bench-linux
           path: |
@@ -114,11 +123,13 @@ jobs:
       # terms acknowledgement (repository variable R3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED=ON) are present.
       R3DSS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') && 'ON' || 'OFF' }}
       R3DSS_TERMS_ACK: ${{ vars.R3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED || 'OFF' }}
+      # The Windows build always ships the CUDA resampler; only a manual run can opt out.
+      R3DSS_WITH_CUDA: ${{ (github.event_name != 'workflow_dispatch' || inputs.cuda) && 'ON' || 'OFF' }}
       # Tag to publish a GitHub release under: the pushed v* / dev-* tag, or a dev-* tag given to a
       # manual run (the release then creates that tag at this run's commit). Empty = no release.
       R3DSS_PUBLISH_TAG: ${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/dev-')) && github.ref_name || (startsWith(inputs.prerelease_tag, 'dev-') && inputs.prerelease_tag || '') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Fetch RED R3D SDK (private, optional)
         if: env.R3DSDK_ZIP_URL != ''
         shell: pwsh
@@ -142,7 +153,7 @@ jobs:
           "R3DSDK_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "RED R3D SDK unpacked at $root"
       - name: Cache sample clips
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .deps\samples
           key: samples-v1
@@ -152,7 +163,7 @@ jobs:
           python scripts/fetch_samples.py
           "R3DSS_SAMPLES=$env:GITHUB_WORKSPACE\.deps\samples" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Cache vcpkg binaries
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .deps\vcpkg-cache
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
@@ -170,13 +181,14 @@ jobs:
           version: "6.8.*"
           arch: win64_msvc2022_64
           cache: true
-      - name: CUDA toolkit (optional)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.cuda }}
-        uses: Jimver/cuda-toolkit@v0.2.19
+      - name: CUDA toolkit
+        if: env.R3DSS_WITH_CUDA == 'ON'
+        # CUDA 12.x rejects the runner's MSVC 19.5x (VS 2026); 13.x supports it and sm_120 (RTX 50).
+        uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: "12.6.0"
+          cuda: "13.3.1"
           method: network
-          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "crt", "nvvm", "visual_studio_integration"]'
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -185,7 +197,9 @@ jobs:
         run: |
           $env:QT_ROOT = $env:QT_ROOT_DIR
           $env:VCPKG_ROOT = "$env:GITHUB_WORKSPACE\.deps\vcpkg"
-          cmake --preset windows-release -DR3DSS_RELEASE="$env:R3DSS_RELEASE" -DR3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED="$env:R3DSS_TERMS_ACK"
+          # R3DSS_WITH_CUDA=ON (not AUTO) so a toolkit CMake cannot find fails the build instead of
+          # silently shipping a CPU-only installer.
+          cmake --preset windows-release -DR3DSS_RELEASE="$env:R3DSS_RELEASE" -DR3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED="$env:R3DSS_TERMS_ACK" -DR3DSS_WITH_CUDA="$env:R3DSS_WITH_CUDA"
           if ($LASTEXITCODE -ne 0) { throw "configure failed" }
       - name: Build
         shell: pwsh
@@ -196,6 +210,8 @@ jobs:
       - name: CLI end-to-end
         shell: pwsh
         run: |
+          $codecs = .\build\windows-release\src\cli\r3dss-cli.exe codecs --json | Out-String | ConvertFrom-Json
+          if ($env:R3DSS_WITH_CUDA -eq "ON" -and $null -eq $codecs.cudaDevices) { throw "CUDA resampler was not built in" }
           .\build\windows-release\src\cli\r3dss-cli.exe synth $env:TEMP\synth --width 1920 --height 1080 --frames 8
           .\build\windows-release\src\cli\r3dss-cli.exe convert $env:TEMP\synth -o $env:TEMP\out --size 960x540
       - name: Install + package
@@ -204,7 +220,10 @@ jobs:
           cmake --install build\windows-release --prefix dist
           if (-not (Test-Path dist\bin\r3dss-gui.exe)) { throw "GUI was not built" }
           Compress-Archive -Path dist\* -DestinationPath r3dss-win64.zip -Force
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DSourceDir="$PWD\dist" /DAppVersion="0.2.0" installer\r3dss.iss
+          # Installer version: v1.2.3 tag -> 1.2.3, otherwise the CMake project version.
+          if ($env:GITHUB_REF -match '^refs/tags/v(\d+\.\d+\.\d+.*)$') { $ver = $Matches[1] }
+          else { $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(r3dss VERSION ([0-9.]+)').Matches[0].Groups[1].Value }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DSourceDir="$PWD\dist" /DAppVersion="$ver" installer\r3dss.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
       - name: Installed acceptance (silent install, then run from the installed location)
         shell: pwsh
@@ -217,17 +236,17 @@ jobs:
           $mode = if ($env:R3DSS_RELEASE -eq "ON") { "release" } else { "dev" }
           python scripts/acceptance.py --bin "$dir\bin" --mode $mode --report acceptance-windows.json
           if ($LASTEXITCODE -ne 0) { throw "installed acceptance failed ($mode)" }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: acceptance-windows
           path: acceptance-windows.json
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: r3dss-win64-portable
           path: r3dss-win64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: r3dss-win64-installer
           path: installer\Output\*.exe
@@ -248,7 +267,7 @@ jobs:
           Set-Content -Encoding utf8 release-notes.md $notes
       - name: Publish GitHub release
         if: env.R3DSS_PUBLISH_TAG != ''
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.R3DSS_PUBLISH_TAG }}
           target_commitish: ${{ github.sha }}

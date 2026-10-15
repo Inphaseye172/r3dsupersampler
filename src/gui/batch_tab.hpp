@@ -24,6 +24,8 @@ public:
     explicit BatchTab(const AppSettings& settings, QWidget* parent = nullptr);
     BatchState state() const { return state_; }
     QString title() const;
+    QString customTitle() const { return customTitle_; }
+    void setCustomTitle(const QString& t) { customTitle_ = t; }
     bool hasWork() const { return model_->rowCount() > 0 || !copies_.empty(); }
     pipeline::BatchJob buildJob() const;
     void applySettings(const AppSettings& s) { settings_ = s; }
@@ -61,6 +63,7 @@ private:
     QPushButton *addFilesBtn_, *addFolderBtn_, *removeBtn_, *startBtn_, *pauseBtn_, *cancelBtn_;
     QLabel* summaryLabel_;
     BatchState state_ = BatchState::Idle;
+    QString customTitle_; // user-chosen tab name; empty = derived from the first source
     std::unique_ptr<EngineBridge> engine_;
     std::vector<pipeline::CopyJob> copies_;
     int copiesDone_ = 0, copiesFailed_ = 0;

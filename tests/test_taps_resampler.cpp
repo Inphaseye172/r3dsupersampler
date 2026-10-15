@@ -152,7 +152,17 @@ TEST_CASE("Size planner presets") {
     REQUIRE(uhd->height == 2160);
     auto fhd = planOutputSize(6048, 3402, SizePreset::FHD, std::nullopt, 2);
     REQUIRE(fhd->height == 1080);
-    REQUIRE_FALSE(planOutputSize(3840, 2160, SizePreset::SixK, std::nullopt, 2));
+    // Smaller sources step down to the largest preset that fits, else keep their own size.
+    auto down = planOutputSize(3840, 2160, SizePreset::SixK, std::nullopt, 2);
+    REQUIRE(down);
+    REQUIRE(down->width == 3840);
+    REQUIRE(down->height == 2160);
+    auto dci = planOutputSize(4096, 2160, SizePreset::SixK, std::nullopt, 2);
+    REQUIRE(dci->width == 3840);
+    auto tiny = planOutputSize(1280, 720, SizePreset::UHD, std::nullopt, 2);
+    REQUIRE(tiny->width == 1280);
+    REQUIRE(tiny->height == 720);
+    REQUIRE_FALSE(planOutputSize(3840, 2160, SizePreset::Custom, OutputSize{6048, 3402}, 2));
     auto same = planOutputSize(4096, 2160, SizePreset::Same, std::nullopt, 2);
     REQUIRE(same->width == 4096);
     auto custom = planOutputSize(4096, 2160, SizePreset::Custom, OutputSize{2001, 1001}, 2);

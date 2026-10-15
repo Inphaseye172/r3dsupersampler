@@ -127,6 +127,7 @@ BatchTab::BatchTab(const AppSettings& settings, QWidget* parent) : QWidget(paren
 }
 
 QString BatchTab::title() const {
+    if (!customTitle_.isEmpty()) return customTitle_;
     if (model_->rowCount() == 0) return "New batch";
     return toQString(model_->rows().front().source.filename()) +
            (model_->rowCount() > 1 ? QString(" +%1").arg(model_->rowCount() - 1) : QString());

@@ -128,10 +128,18 @@ TEST_CASE("CinemaDNG clip end to end on disk with verification and output naming
     REQUIRE(r2.status == ClipStatus::Skipped);
     o.overwrite = true;
     REQUIRE(convertClip(job, o, ctx).status == ClipStatus::Done);
-    // Upscale request is skipped with a message
+    // A preset larger than the source converts at the source size (and is named after it); only a custom
+    // upscale is skipped with a message
     o.size = SizePreset::UHD;
     ClipResult r3 = convertClip(job, o, ctx);
-    REQUIRE(r3.status == ClipStatus::Skipped);
+    INFO(r3.message);
+    REQUIRE(r3.status == ClipStatus::Done);
+    REQUIRE(r3.outWidth == 384);
+    REQUIRE(r3.outHeight == 216);
+    REQUIRE(r3.output == dir / "out" / "A001_same_Q5");
+    o.size = SizePreset::Custom;
+    o.customSize = resample::OutputSize{768, 432};
+    REQUIRE(convertClip(job, o, ctx).status == ClipStatus::Skipped);
     // REDCODE output is refused with the documented reason
     o.size = SizePreset::Same;
     o.outputFormat = codec::Format::RedFamily;

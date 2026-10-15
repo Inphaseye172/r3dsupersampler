@@ -152,8 +152,15 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
     res.outWidth = outSize.width;
     res.outHeight = outSize.height;
 
+    // Name the output after the size actually written: a preset larger than the source steps down.
+    JobOptions naming = options;
+    if (options.size != SizePreset::Same && options.size != SizePreset::Custom) {
+        naming.size = SizePreset::Same;
+        for (SizePreset p : {SizePreset::SixK, SizePreset::UHD, SizePreset::TwoK, SizePreset::FHD})
+            if (resample::presetWidth(p) == outSize.width) naming.size = p;
+    }
     const std::string stem = fs::is_directory(job.source) ? toUtf8(job.source.filename()) : toUtf8(job.source.stem());
-    const std::string name = job.outputName.empty() ? expandName(options.namingTemplate, stem, options, outFmt) : job.outputName;
+    const std::string name = job.outputName.empty() ? expandName(options.namingTemplate, stem, naming, outFmt) : job.outputName;
     fs::path dest = job.outputDir / fromUtf8(name);
     if (outFmt != codec::Format::CinemaDNG && outFmt != codec::Format::Memory) dest += codec::formatExtension(outFmt);
     if (outFmt == codec::Format::Memory) dest = fromUtf8("mem://" + name);

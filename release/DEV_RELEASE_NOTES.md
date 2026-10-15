@@ -28,8 +28,11 @@ On GitHub's `windows-latest` runner: unit tests, a CLI end-to-end conversion, th
 install of the attached installer and the developer acceptance checks run from the installed
 folder (`acceptance-windows.json`, attached).
 
+The CUDA resampler is built in (NVIDIA Turing through Blackwell; the CPU path is used when no
+GPU is present). The runner has no GPU, so CUDA conversions are compiled and linked but not run.
+
 Not checked: a clean Windows machine (the runner already has the Visual C++ runtime),
-DaVinci Resolve, and the CUDA path.
+DaVinci Resolve, and a conversion on an NVIDIA GPU.
 
 ## Licenses
 

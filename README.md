@@ -69,7 +69,7 @@ secrets `R3DSDK_ZIP_URL` / `R3DSDK_TOKEN`; without them the SDK module and its t
 
 ## Use
 
-GUI: `Supersampler.exe`. Add files or a folder, pick size / container / quality, Start. Each
+GUI: `r3dss-gui.exe`. Add files or a folder, pick size / container / quality, Start. Each
 batch is a tab; starting another batch while one runs queues it.
 
 ```text

@@ -35,9 +35,24 @@ Expected<OutputSize> planOutputSize(uint32_t srcW, uint32_t srcH, SizePreset pre
         out.width = alignTo(custom->width, alignment);
         out.height = alignTo(custom->height, alignment);
     } else {
-        const uint32_t w = presetWidth(preset);
-        out.width = alignTo(w, alignment);
-        out.height = alignTo(static_cast<double>(w) * srcH / srcW, alignment);
+        auto fromPreset = [&](SizePreset p) {
+            const uint32_t w = presetWidth(p);
+            return OutputSize{alignTo(w, alignment), alignTo(static_cast<double>(w) * srcH / srcW, alignment)};
+        };
+        // A source smaller than the preset is converted at the largest preset that fits, else at its own
+        // size, so mixed-resolution batches convert every clip instead of skipping the small ones.
+        static constexpr SizePreset kDescending[] = {SizePreset::SixK, SizePreset::UHD, SizePreset::TwoK, SizePreset::FHD};
+        out = OutputSize{srcW, srcH};
+        bool reached = false;
+        for (SizePreset p : kDescending) {
+            reached = reached || p == preset;
+            if (!reached) continue;
+            const OutputSize cand = fromPreset(p);
+            if (cand.width <= srcW && cand.height <= srcH) {
+                out = cand;
+                break;
+            }
+        }
     }
     if (out.width > srcW || out.height > srcH)
         return makeError(ErrorCode::Unsupported, "output " + std::to_string(out.width) + "x" + std::to_string(out.height) +

@@ -33,10 +33,16 @@ if(NOT R3DSS_WITH_CUDA STREQUAL "OFF")
     set(CMAKE_CUDA_STANDARD 20)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     set(R3DSS_HAVE_CUDA ON)
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+    # enable_language() has already filled CMAKE_CUDA_ARCHITECTURES with nvcc's default (e.g. sm_52
+    # only), so "still the default" means nobody chose: use Turing / Ampere / Ada, plus Blackwell
+    # (RTX 50) when the toolkit knows it. Each entry also embeds PTX for newer GPUs.
+    if(CMAKE_CUDA_ARCHITECTURES STREQUAL "" OR CMAKE_CUDA_ARCHITECTURES STREQUAL "${CMAKE_CUDA_ARCHITECTURES_DEFAULT}")
       set(CMAKE_CUDA_ARCHITECTURES 75 86 89)
+      if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+        list(APPEND CMAKE_CUDA_ARCHITECTURES 120)
+      endif()
     endif()
-    message(STATUS "CUDA resampler: enabled (${CMAKE_CUDA_COMPILER})")
+    message(STATUS "CUDA resampler: enabled (${CMAKE_CUDA_COMPILER} ${CMAKE_CUDA_COMPILER_VERSION}; sm ${CMAKE_CUDA_ARCHITECTURES})")
   elseif(R3DSS_WITH_CUDA STREQUAL "ON")
     message(FATAL_ERROR "R3DSS_WITH_CUDA=ON but no CUDA compiler was found")
   else()

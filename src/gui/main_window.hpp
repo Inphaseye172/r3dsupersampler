@@ -25,10 +25,12 @@ private slots:
     void onTabClose(int index);
     void onSettings();
     void onResolveNote();
+    void onRenameTab(int index);
     void appendLog(const QString& line);
 
 private:
     void updateStatus();
+    void refreshTabText(BatchTab* tab);
     void startNextQueued();
     void applyLogLevel();
 

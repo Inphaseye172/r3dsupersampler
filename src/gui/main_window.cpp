@@ -2,17 +2,40 @@
 #include <QAction>
 #include <QCloseEvent>
 #include <QDockWidget>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QToolBar>
 #include "r3dss/core/logger.hpp"
 #include "r3dss/pipeline/clip_converter.hpp"
 #include "settings_dialog.hpp"
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace r3dss::gui {
+
+namespace {
+// Keeps the PC from sleeping while a batch converts (the display may still turn off).
+void setKeepAwake(bool on) {
+#ifdef _WIN32
+    SetThreadExecutionState(ES_CONTINUOUS | (on ? ES_SYSTEM_REQUIRED : 0));
+#else
+    (void)on;
+#endif
+}
+} // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), settings_(AppSettings::load()) {
     setWindowTitle("r3dss (preview)");
@@ -20,8 +43,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), settings_(AppSett
     tabs_ = new QTabWidget(this);
     tabs_->setTabsClosable(true);
     tabs_->setMovable(true);
+    tabs_->setToolTip("Double-click a tab to rename the batch");
     setCentralWidget(tabs_);
     connect(tabs_, &QTabWidget::tabCloseRequested, this, &MainWindow::onTabClose);
+    connect(tabs_->tabBar(), &QTabBar::tabBarDoubleClicked, this, &MainWindow::onRenameTab);
 
     auto* tb = addToolBar("Main");
     tb->setMovable(false);
@@ -61,11 +86,26 @@ BatchTab* MainWindow::newBatch() {
     connect(tab, &BatchTab::finished, this, &MainWindow::onBatchFinished);
     connect(tab, &BatchTab::statusText, this, [this](const QString& t) { activeLabel_->setText(t); });
     connect(tab, &BatchTab::stateChanged, this, [this](BatchTab* t) {
-        const int i = tabs_->indexOf(t);
-        if (i >= 0) tabs_->setTabText(i, t->title() + (t->state() == BatchState::Queued ? " (queued)" : t->state() == BatchState::Running ? " (running)" : ""));
+        refreshTabText(t);
         updateStatus();
     });
     return tab;
+}
+
+void MainWindow::refreshTabText(BatchTab* t) {
+    const int i = tabs_->indexOf(t);
+    if (i >= 0) tabs_->setTabText(i, t->title() + (t->state() == BatchState::Queued ? " (queued)" : t->state() == BatchState::Running ? " (running)" : ""));
+}
+
+void MainWindow::onRenameTab(int index) {
+    auto* tab = qobject_cast<BatchTab*>(tabs_->widget(index));
+    if (!tab) return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, "Rename batch", "Name (empty = automatic):", QLineEdit::Normal,
+                                               tab->customTitle(), &ok);
+    if (!ok) return;
+    tab->setCustomTitle(name.trimmed());
+    refreshTabText(tab);
 }
 
 void MainWindow::onRequestStart(BatchTab* tab) {
@@ -150,6 +190,7 @@ void MainWindow::updateStatus() {
     const auto rc = pipeline::chooseResampler(settings_.useGpu);
     gpuLabel_->setText(rc.cuda ? "GPU: CUDA" : "CPU fallback");
     if (!running_) activeLabel_->setText("Idle");
+    setKeepAwake(running_ && running_->state() == BatchState::Running);
 }
 
 void MainWindow::closeEvent(QCloseEvent* e) {

@@ -80,7 +80,7 @@ Settings persist via `QSettings` (organisation "Anchorpoint", application "R3DSu
 - "REDCODE cannot be written (no public encoder exists); choose CinemaDNG, ProRes or DNxHR output"
 - "cannot decode REDCODE frames: RED R3D SDK not built in: …" (Failed; install the SDK runtime)
 - "output already exists: <path>" (Skipped; enable Overwrite to replace)
-- "output WxH would be larger than source WxH" (Skipped; upscaling is never done)
+- "output WxH would be larger than source WxH" (Skipped; custom sizes only: a preset larger than the source steps down to the largest preset that fits, or the source size; upscaling is never done)
 - "verification failed: <problem>; …" (Failed; the output is kept for inspection)
 - "These files are not recognised raw clips: …" (dialog after Add files)
 

@@ -7,7 +7,8 @@ target_compile_options(r3dss_resample_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--
 if(WIN32)
   find_package(CUDAToolkit)
   if(CUDAToolkit_FOUND)
-    file(GLOB R3DSS_CUDART_DLL "${CUDAToolkit_BIN_DIR}/cudart64_*.dll")
+    # CUDA 13 keeps the DLLs in bin\x64.
+    file(GLOB R3DSS_CUDART_DLL "${CUDAToolkit_BIN_DIR}/cudart64_*.dll" "${CUDAToolkit_BIN_DIR}/x64/cudart64_*.dll")
     install(FILES ${R3DSS_CUDART_DLL} DESTINATION bin)
   endif()
 endif()
