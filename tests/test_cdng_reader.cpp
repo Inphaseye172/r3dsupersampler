@@ -581,8 +581,8 @@ std::vector<uint16_t> libRawStylePlacement(const fs::path& file) {
 } // namespace
 
 TEST_CASE("CinemaDNG writer: LJ92 tiles never wider than the image, readable LibRaw-style") {
-    for (uint32_t width : {16u, 34u, 66u, 256u, 270u, 856u, 1000u, 1922u}) {
-        for (uint32_t height : {16u, 22u, 300u}) {
+    for (uint32_t width : {16u, 34u, 66u, 256u, 270u, 512u, 856u, 1000u, 1024u, 1922u}) {
+        for (uint32_t height : {16u, 22u, 256u, 288u, 300u, 512u}) {
             const fs::path out = tmpDir("cdng-tiles");
             BayerFrame f = BayerFrame::create(width, height, 12, CfaPattern::RGGB);
             std::mt19937 rng(width * 7 + height);
@@ -606,7 +606,9 @@ TEST_CASE("CinemaDNG writer: LJ92 tiles never wider than the image, readable Lib
             REQUIRE(tw <= 256);
             REQUIRE(th % 16 == 0);
             REQUIRE(th <= 256);
-            REQUIRE(ifd->find(tiff::tag::TileOffsets)->count == ((width + tw - 1) / tw) * ((height + th - 1) / th));
+            const uint32_t nTiles = ifd->find(tiff::tag::TileOffsets)->count;
+            REQUIRE(nTiles == ((width + tw - 1) / tw) * ((height + th - 1) / th));
+            REQUIRE(nTiles != 4); // LibRaw reads four tiles as a Sinar 4-shot file
             REQUIRE(libRawStylePlacement(file) == f.data);
             auto o = openClip(out / "o");
             REQUIRE(readOk(*o.reader, 0).data == f.data);
