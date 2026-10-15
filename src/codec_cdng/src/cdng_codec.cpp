@@ -663,13 +663,16 @@ private:
 // the image shears every row after the first. Tiles are at most 256 wide (a multiple of 16 that
 // fits the image) and at most `maxRows` (a multiple of 16) tall; only the last column/row is padded.
 // Images narrower than 16 are written as one strip, whose stream width is the image width.
-// A frame never has exactly four tiles: LibRaw (after dcraw) takes four TileOffsets for a Sinar
-// 4-shot file and misreads such DNGs (rawpy 0.27.1: every 2x2 grid whose width is two tiles, e.g.
-// 512x512 or 512x288 with 256x256 tiles), so the tile length, else the width, is halved instead.
+// ImageWidth is never twice TileWidth: LibRaw's lossless_dng_load_raw (rawpy 0.27.1,
+// src/decoders/dng.cpp) reads clrs * jwide samples per JPEG row when clrs * jwide == raw_width,
+// and jwide is TileWidth for our 2-component tiles, so a 512-wide frame with 256-wide tiles
+// decodes as garbage at any height. Such a width gets 240-wide tiles instead.
 struct TileLayout {
     uint32_t tileW = 0, tileH = 0, across = 1, down = 1;
     bool strip = false;
 };
+
+constexpr uint32_t kLjComponents = 2;
 
 TileLayout tileLayoutFor(uint32_t width, uint32_t height, uint32_t maxRows) {
     TileLayout t;
@@ -679,22 +682,12 @@ TileLayout tileLayoutFor(uint32_t width, uint32_t height, uint32_t maxRows) {
         t.tileH = height;
         return t;
     }
-    const auto layout = [&](uint32_t tw, uint32_t th) {
-        TileLayout l;
-        l.tileW = tw;
-        l.tileH = th;
-        l.across = (width + tw - 1) / tw;
-        l.down = (height + th - 1) / th;
-        return l;
-    };
-    const auto half = [](uint32_t v) { return std::max<uint32_t>(16, (v / 2 + 15) / 16 * 16); };
-    const uint32_t tw = std::min<uint32_t>(256, width / 16 * 16);
-    const uint32_t th = std::min<uint32_t>(std::max<uint32_t>(16, (maxRows + 15) / 16 * 16), (height + 15) / 16 * 16);
-    for (const auto& [w, h] : {std::pair{tw, th}, std::pair{tw, half(th)}, std::pair{half(tw), th}, std::pair{half(tw), half(th)}}) {
-        t = layout(w, h);
-        if (t.across * t.down != 4) return t;
-    }
-    return layout(tw, th); // not reached for any image of 16x16 or more
+    t.tileW = std::min<uint32_t>(256, width / 16 * 16);
+    if (kLjComponents * t.tileW == width) t.tileW -= 16;
+    t.tileH = std::min<uint32_t>(std::max<uint32_t>(16, (maxRows + 15) / 16 * 16), (height + 15) / 16 * 16);
+    t.across = (width + t.tileW - 1) / t.tileW;
+    t.down = (height + t.tileH - 1) / t.tileH;
+    return t;
 }
 
 // Nearest code of a non-decreasing LinearizationTable for every 16-bit linear value (ties go to
@@ -789,7 +782,7 @@ public:
                 }
                 ljpeg::EncodeParams ep;
                 ep.precision = bps;
-                ep.components = 2;
+                ep.components = kLjComponents;
                 ep.predictor = 1;
                 auto enc = ljpeg::encode(tile.data(), tl.tileW, tl.tileH, ep);
                 if (enc) encoded[t] = std::move(*enc);

@@ -551,8 +551,11 @@ TEST_CASE("Per-frame BlackLevel and WhiteLevel are read per frame and written pe
 }
 
 namespace {
-// LibRaw's lossless_dng_load_raw sample placement (libraw/src/decoders/dng.cpp): samples of each
-// tile's stream go to (trow + row, tcol + col) and wrap when ++col >= tile_width || col >= raw_width.
+// LibRaw's lossless_dng_load_raw sample placement (rawpy 0.27.1, LibRaw src/decoders/dng.cpp):
+// samples of each tile's stream go to (trow + row, tcol + col) and wrap when
+// ++col >= tile_width || col >= raw_width. When clrs * jwide == raw_width (jwide = stream width in
+// samples) LibRaw instead reads clrs * jwide samples per JPEG row, past the end of the row, which
+// garbles the frame; the emulation fails on that layout.
 std::vector<uint16_t> libRawStylePlacement(const fs::path& file) {
     tiff::Reader r;
     REQUIRE(r.open(file));
@@ -569,6 +572,7 @@ std::vector<uint16_t> libRawStylePlacement(const fs::path& file) {
     for (uint32_t t = 0; t < to->count && trow < H; ++t) {
         auto img = ljpeg::decode(r.bytes().data() + *to->u32(t), *tc->u32(t));
         REQUIRE(img);
+        REQUIRE_FALSE((img->components > 1 && img->components * img->width == W));
         uint32_t row = 0, col = 0;
         for (uint16_t v : img->samples) {
             if (trow + row < H && tcol + col < W) out[size_t(trow + row) * W + tcol + col] = v;
@@ -608,7 +612,6 @@ TEST_CASE("CinemaDNG writer: LJ92 tiles never wider than the image, readable Lib
             REQUIRE(th <= 256);
             const uint32_t nTiles = ifd->find(tiff::tag::TileOffsets)->count;
             REQUIRE(nTiles == ((width + tw - 1) / tw) * ((height + th - 1) / th));
-            REQUIRE(nTiles != 4); // LibRaw reads four tiles as a Sinar 4-shot file
             REQUIRE(libRawStylePlacement(file) == f.data);
             auto o = openClip(out / "o");
             REQUIRE(readOk(*o.reader, 0).data == f.data);
