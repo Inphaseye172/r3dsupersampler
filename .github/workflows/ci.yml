@@ -31,12 +31,25 @@ jobs:
           sudo apt-get install -y ninja-build catch2 nlohmann-json3-dev libcli11-dev qt6-base-dev libgl1-mesa-dev
       - name: Fetch RED R3D SDK (private, optional)
         if: env.R3DSDK_ZIP_URL != ''
+        # Never fails the job: a missing or unreachable SDK means "build without it" (docs/IMPLEMENTATION_PLAN.md).
         run: |
           mkdir -p .deps/r3dsdk
-          curl -fsSL -H "Authorization: Bearer $R3DSDK_TOKEN" -o .deps/r3dsdk.zip "$R3DSDK_ZIP_URL"
-          unzip -q .deps/r3dsdk.zip -d .deps/r3dsdk
-          root=$(dirname "$(find .deps/r3dsdk -name R3DSDK.h -path '*Include*' | head -1)")/..
-          echo "R3DSDK_ROOT=$(cd "$root" && pwd)" >> "$GITHUB_ENV"
+          if ! curl -fsSL --retry 2 -H "Authorization: Bearer $R3DSDK_TOKEN" -o .deps/r3dsdk.zip "$R3DSDK_ZIP_URL"; then
+            echo "::warning title=RED R3D SDK::download failed (HTTP error or bad R3DSDK_ZIP_URL); building without the SDK"
+            exit 0
+          fi
+          if ! unzip -q .deps/r3dsdk.zip -d .deps/r3dsdk; then
+            echo "::warning title=RED R3D SDK::archive could not be unzipped; building without the SDK"
+            exit 0
+          fi
+          hdr=$(find .deps/r3dsdk -name R3DSDK.h -path '*Include*' | head -1)
+          if [ -z "$hdr" ]; then
+            echo "::warning title=RED R3D SDK::R3DSDK.h not found in the archive; building without the SDK"
+            exit 0
+          fi
+          root=$(cd "$(dirname "$hdr")/.." && pwd)
+          echo "R3DSDK_ROOT=$root" >> "$GITHUB_ENV"
+          echo "RED R3D SDK unpacked at $root"
       - name: Cache sample clips
         uses: actions/cache@v4
         with:
@@ -91,13 +104,25 @@ jobs:
       - name: Fetch RED R3D SDK (private, optional)
         if: env.R3DSDK_ZIP_URL != ''
         shell: pwsh
+        # Never fails the job: a missing or unreachable SDK means "build without it".
         run: |
+          $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force .deps\r3dsdk | Out-Null
-          Invoke-WebRequest -Uri $env:R3DSDK_ZIP_URL -Headers @{ Authorization = "Bearer $env:R3DSDK_TOKEN" } -OutFile .deps\r3dsdk.zip
-          Expand-Archive -Path .deps\r3dsdk.zip -DestinationPath .deps\r3dsdk -Force
+          try {
+            Invoke-WebRequest -Uri $env:R3DSDK_ZIP_URL -Headers @{ Authorization = "Bearer $env:R3DSDK_TOKEN" } -OutFile .deps\r3dsdk.zip
+            Expand-Archive -Path .deps\r3dsdk.zip -DestinationPath .deps\r3dsdk -Force
+          } catch {
+            Write-Host "::warning title=RED R3D SDK::download or unzip failed ($($_.Exception.Message)); building without the SDK"
+            exit 0
+          }
           $hdr = Get-ChildItem -Recurse .deps\r3dsdk -Filter R3DSDK.h | Where-Object { $_.DirectoryName -like "*Include*" } | Select-Object -First 1
+          if (-not $hdr) {
+            Write-Host "::warning title=RED R3D SDK::R3DSDK.h not found in the archive; building without the SDK"
+            exit 0
+          }
           $root = (Resolve-Path (Join-Path $hdr.DirectoryName "..")).Path
           "R3DSDK_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "RED R3D SDK unpacked at $root"
       - name: Cache sample clips
         uses: actions/cache@v4
         with:
