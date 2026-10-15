@@ -12,6 +12,10 @@ on:
         description: "Also build the CUDA resampler on Windows (slow toolkit install)"
         type: boolean
         default: false
+      prerelease_tag:
+        description: "Publish a developer pre-release under this new tag (must start with dev-); empty = no release"
+        type: string
+        default: ""
 
 env:
   # Private: a direct-download URL for the RED R3D SDK zip and a bearer token for it. The SDK is
@@ -101,7 +105,7 @@ jobs:
     name: Windows x64 (MSVC, vcpkg, Qt, installer)
     runs-on: windows-latest
     permissions:
-      contents: write # publish GitHub releases on v* / dev-* tags
+      contents: write # publish GitHub releases (v* / dev-* tags, or a manual dev-* pre-release)
     env:
       VCPKG_ROOT: ${{ github.workspace }}\.deps\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.deps\vcpkg-cache
@@ -110,6 +114,9 @@ jobs:
       # terms acknowledgement (repository variable R3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED=ON) are present.
       R3DSS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') && 'ON' || 'OFF' }}
       R3DSS_TERMS_ACK: ${{ vars.R3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED || 'OFF' }}
+      # Tag to publish a GitHub release under: the pushed v* / dev-* tag, or a dev-* tag given to a
+      # manual run (the release then creates that tag at this run's commit). Empty = no release.
+      R3DSS_PUBLISH_TAG: ${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/dev-')) && github.ref_name || (startsWith(inputs.prerelease_tag, 'dev-') && inputs.prerelease_tag || '') }}
     steps:
       - uses: actions/checkout@v4
       - name: Fetch RED R3D SDK (private, optional)
@@ -225,28 +232,30 @@ jobs:
           name: r3dss-win64-installer
           path: installer\Output\*.exe
       - name: Release notes and checksums
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/dev-')
+        if: env.R3DSS_PUBLISH_TAG != ''
         shell: pwsh
         run: |
           $files = @(Get-Item r3dss-win64.zip) + @(Get-ChildItem installer\Output\*.exe)
           $sums = foreach ($f in $files) { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $f.FullName).Hash.ToLower(), $f.Name }
           $sums | Set-Content -Encoding ascii SHA256SUMS.txt
-          if ($env:GITHUB_REF -like "refs/tags/dev-*") {
-            $notes = (Get-Content -Raw release\DEV_RELEASE_NOTES.md).Replace("{{COMMIT}}", $env:GITHUB_SHA).Replace("{{TAG}}", $env:GITHUB_REF_NAME)
+          if ($env:R3DSS_PUBLISH_TAG -like "dev-*") {
+            $notes = (Get-Content -Raw release\DEV_RELEASE_NOTES.md).Replace("{{COMMIT}}", $env:GITHUB_SHA).Replace("{{TAG}}", $env:R3DSS_PUBLISH_TAG)
           } else {
-            $notes = "Release $env:GITHUB_REF_NAME from commit $env:GITHUB_SHA, built with the production release gate (release/capabilities.json).`n"
+            $notes = "Release $env:R3DSS_PUBLISH_TAG from commit $env:GITHUB_SHA, built with the production release gate (release/capabilities.json).`n"
           }
           $fence = [string]::new([char]96, 3)
           $notes += "`n## SHA-256`n`n$fence" + "text`n" + ($sums -join "`n") + "`n$fence`n"
           Set-Content -Encoding utf8 release-notes.md $notes
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/dev-')
+        if: env.R3DSS_PUBLISH_TAG != ''
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ startsWith(github.ref, 'refs/tags/dev-') && format('r3dss developer build {0}', github.ref_name) || format('r3dss {0}', github.ref_name) }}
+          tag_name: ${{ env.R3DSS_PUBLISH_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ startsWith(env.R3DSS_PUBLISH_TAG, 'dev-') && format('r3dss developer build {0}', env.R3DSS_PUBLISH_TAG) || format('r3dss {0}', env.R3DSS_PUBLISH_TAG) }}
           body_path: release-notes.md
-          prerelease: ${{ startsWith(github.ref, 'refs/tags/dev-') }}
-          make_latest: ${{ startsWith(github.ref, 'refs/tags/dev-') && 'false' || 'true' }}
+          prerelease: ${{ startsWith(env.R3DSS_PUBLISH_TAG, 'dev-') }}
+          make_latest: ${{ startsWith(env.R3DSS_PUBLISH_TAG, 'dev-') && 'false' || 'true' }}
           fail_on_unmatched_files: true
           files: |
             r3dss-win64.zip
