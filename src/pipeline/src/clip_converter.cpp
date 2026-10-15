@@ -257,10 +257,10 @@ ClipResult convertClip(const ClipJob& jobIn, const JobOptions& options, const Cl
             res.skipReason = SkipReason::OutputExists;
             return failWith(ClipStatus::Skipped, "output already exists: " + toUtf8(finalDest));
         }
-        if (!job.outputDir.empty()) {
-            fs::create_directories(job.outputDir, ec);
-            if (!fs::is_directory(job.outputDir, ec))
-                return failWith(ClipStatus::Failed, "cannot create output folder " + toUtf8(job.outputDir));
+        if (const fs::path parent = finalDest.parent_path(); !parent.empty()) {
+            fs::create_directories(parent, ec);
+            if (!fs::is_directory(parent, ec))
+                return failWith(ClipStatus::Failed, "cannot create output folder " + toUtf8(parent));
         }
         auto c = OutputClaim::claim(finalDest, outFmt == codec::Format::CinemaDNG);
         if (!c) return failWith(ClipStatus::Failed, c.error().message);

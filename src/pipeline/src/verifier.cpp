@@ -1,5 +1,6 @@
 #include "r3dss/pipeline/verifier.hpp"
 #include "r3dss/core/paths.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <fstream>

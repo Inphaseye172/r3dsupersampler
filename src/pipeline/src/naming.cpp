@@ -1,4 +1,5 @@
 #include "r3dss/pipeline/job.hpp"
+#include <cstdint>
 #include <limits>
 #include "r3dss/core/paths.hpp"
 
