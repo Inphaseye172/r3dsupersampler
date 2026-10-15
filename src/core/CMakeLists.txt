@@ -5,6 +5,7 @@ add_library(r3dss_core STATIC
   src/types.cpp
   src/hardware.cpp
   src/pool.cpp
+  src/paths.cpp
 )
 add_library(r3dss::core ALIAS r3dss_core)
 target_include_directories(r3dss_core PUBLIC include)

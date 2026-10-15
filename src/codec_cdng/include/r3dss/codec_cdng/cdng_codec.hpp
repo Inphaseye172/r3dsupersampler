@@ -11,7 +11,7 @@ namespace r3dss::codec {
 struct CdngWriterOptions {
     bool losslessJpeg = true;   // Compression 7 (true) or 1 (false)
     uint32_t tileRows = 256;    // rows per tile when compressed
-    std::string software = "R3D Supersampler";
+    std::string software = "Supersampler";
 };
 
 std::shared_ptr<ICodecFactory> makeCinemaDngCodecFactory(CdngWriterOptions opts = {});

@@ -1,0 +1,14 @@
+Supersampler
+Copyright 2026 Anchor Point Studio
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It decodes REDCODE RAW, Nikon R3D NE and NEV clips through the RED R3D SDK, which is
+proprietary software of RED Digital Cinema distributed under RED's own license and
+never included in this source repository. Third-party components bundled in binary
+releases are listed with their licenses in docs/FEASIBILITY.md and PATENTS.md.
+
+"RED", "REDCODE", "R3D" and "KOMODO" are trademarks of RED Digital Cinema. "Nikon",
+"N-RAW" and "NEV" are trademarks of Nikon Corporation. "ProRes" is a trademark of Apple
+Inc. "DNxHR" is a trademark of Avid Technology, Inc. "DNG" and "CinemaDNG" are trademarks
+of Adobe Inc. They are used here only to describe compatibility.

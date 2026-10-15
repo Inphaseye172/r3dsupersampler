@@ -2,7 +2,7 @@
 #include "r3dss/codec/codec.hpp"
 #include "r3dss/codec/memory_codec.hpp"
 #include "r3dss/codec_cdng/cdng_codec.hpp"
-#include "r3dss/codec_nev/nev_codec.hpp"
+#include "r3dss/codec_r3dsdk/r3dsdk.hpp"
 
 namespace r3dss::codec {
 
@@ -11,8 +11,7 @@ void registerBuiltinCodecs() {
     std::call_once(once, [] {
         auto& r = CodecRegistry::instance();
         r.registerFactory(makeCinemaDngCodecFactory());
-        r.registerFactory(makeNevCodecFactory());
-        r.registerFactory(makeR3dNeCodecFactory());
+        r.registerFactory(r3dsdk::makeRedFamilyFactory());
         r.registerFactory(makeMemoryCodecFactory());
     });
 }

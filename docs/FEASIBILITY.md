@@ -1,4 +1,34 @@
-# Feasibility: reading and writing R3D NE and NEV (N-RAW)
+# Feasibility: REDCODE RAW, R3D NE and NEV sources
+
+## 0. Decision 2026-10-15 (supersedes the sections below)
+
+The container survey (`docs/CODESTREAM.md`) showed that the primary source is **RED KOMODO
+REDCODE RAW**, which no public code can decode at the Bayer level or encode, and that the
+**RED R3D SDK 9.2.1** decodes it, as well as Nikon R3D NE and NEV, to 16-bit RGB. The product
+therefore does:
+
+    RED R3D SDK decode → 16-bit linear RGB → resample (Lanczos-3 / Area) → re-mosaiced lossy
+    CinemaDNG, or ProRes 4444 / XQ, or DNxHR 444 / HQX
+
+- The "no debayer" requirement is withdrawn. CinemaDNG *sources* are still resampled in the
+  Bayer domain (the original resampler is kept and gains RGB planes).
+- The intoPIX / TicoRAW path (§1.2, §3, §4 Path A below) is **dropped**: no option, no stubs, no
+  messages. A native JPEG XS-Bayer codec for Nikon output is a possible later phase, out of scope.
+- REDCODE, R3D NE and NEV are never written. The RED SDK is never committed; builds without it
+  recognise the clips and say why they cannot decode.
+- Licensing: the product is Apache-2.0 (`LICENSE`, `NOTICE`, `PATENTS.md`); the RED SDK runtime
+  is bundled by the installer under RED's redistribution terms (`docs/REDISTRIBUTION.md`, M6).
+- Source detection is by content (SDK metadata `camera_model` / `sensor_name` / `redcode`, or the
+  header strings of the RED chunk), never by extension: Komodo reports `sensor_name = "KOMODO S35"`,
+  Nikon R3D NE `sensor_name = "NIKON"` and `redcode = "R3D NE"`.
+- R3D NE limits (RED SDK notes): no GPU decompression, IPP2 only, optional 32-bit float audio,
+  100 / 120 fps timecode.
+
+The plan is in `docs/IMPLEMENTATION_PLAN.md`. Sections 1–5 below are the 2026-10-14 research and
+are kept as history; their "Path C" recommendation is no longer current.
+
+---
+
 
 Status: research completed 2026-10-15 from public sources. Items marked **unconfirmed** could not
 be verified from primary documentation (the RED, Nikon, intoPIX and product web pages were not

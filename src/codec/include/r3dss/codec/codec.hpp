@@ -10,10 +10,12 @@
 
 namespace r3dss::codec {
 
-enum class Format : uint8_t { CinemaDNG, NEV, R3DNE, Memory, Unknown };
+// RedFamily = any clip in RED's chunked container: REDCODE RAW (KOMODO, V-RAPTOR, ...), Nikon R3D NE
+// and Nikon NEV. They are read through the RED R3D SDK and can never be written.
+enum class Format : uint8_t { CinemaDNG, RedFamily, Memory, Unknown };
 const char* formatName(Format f);
 std::optional<Format> formatFromName(std::string_view s);
-const char* formatExtension(Format f); // ".dng" / ".NEV" / ".R3D"
+const char* formatExtension(Format f); // ".dng" / ".R3D"
 
 struct Capabilities {
     bool read = false;
@@ -25,8 +27,14 @@ struct Capabilities {
     std::vector<uint16_t> bitDepths{12, 14, 16};
 };
 
+// What camera / codec produced a RedFamily clip, detected from content (never from the extension).
+enum class SourceKind : uint8_t { Unknown, CinemaDng, RedcodeRaw, NikonR3dNe, NikonNev };
+const char* sourceKindName(SourceKind k);
+
 struct ClipInfo {
     Format format = Format::Unknown;
+    SourceKind sourceKind = SourceKind::Unknown;
+    std::string sourceLabel; // e.g. "REDCODE RAW (KOMODO 6K)"; shown as the GUI Format column
     std::filesystem::path path;
     uint32_t width = 0, height = 0;
     uint16_t bits = 12;
@@ -56,7 +64,7 @@ public:
 };
 
 struct WriterConfig {
-    std::filesystem::path dest; // file (NEV) or directory (CinemaDNG)
+    std::filesystem::path dest; // file (MOV/MXF) or directory (CinemaDNG)
     std::string clipName;       // base name for frame files / clip header
     uint32_t width = 0, height = 0;
     uint16_t bits = 12;
@@ -131,7 +139,7 @@ private:
     std::vector<std::shared_ptr<ICodecFactory>> factories_;
 };
 
-// Registers the built-in codecs (CinemaDNG, NEV stub, R3D NE stub, memory). Idempotent.
+// Registers the built-in codecs (CinemaDNG, RED family via the R3D SDK, memory). Idempotent.
 void registerBuiltinCodecs();
 
 } // namespace r3dss::codec

@@ -15,7 +15,7 @@
 namespace r3dss::gui {
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), settings_(AppSettings::load()) {
-    setWindowTitle("R3D Supersampler");
+    setWindowTitle("Supersampler");
     resize(1280, 760);
     tabs_ = new QTabWidget(this);
     tabs_->setTabsClosable(true);

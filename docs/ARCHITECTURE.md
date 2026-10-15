@@ -1,5 +1,9 @@
 # Architecture
 
+Updated 2026-10-15 for the REDCODE-via-SDK direction (`docs/IMPLEMENTATION_PLAN.md`). The RGB
+path (SDK decode → RGB resample → re-mosaic / ProRes / DNxHR) is added in milestones 2–4; this
+file describes the modules as they exist now.
+
 ## 1. Modules
 
 ```
@@ -8,8 +12,10 @@ src/core          r3dss_core        Expected/Error, BayerFrame, CFA, Rational, T
                                     Logger, SHA-256, hardware probe + thread plan
 src/codec         r3dss_codec       ICodecReader / ICodecWriter / ICodecFactory, CodecRegistry, memory codec
 src/codec_cdng    r3dss_codec_cdng  TIFF/DNG IFD reader+writer, lossless JPEG (LJ92) codec, WAV, CinemaDNG codec
-src/codec_nev     r3dss_codec_nev   RED-style chunk walker, NEV and R3D NE factories (stubs until TicoRAW SDK)
-src/codec_r3dsdk  (optional)        RED SDK probe/QC module, built only with -DR3DSS_WITH_R3DSDK=ON
+src/codec_red     r3dss_codec_red   RED chunk container walker (3-char tag + version, 4 KiB aligned), header strings,
+                                    source detection, container-only reader
+src/codec_r3dsdk  r3dss_codec_r3dsdk RED R3D SDK runtime + decoder (compiled against the SDK when R3DSDK_ROOT is set,
+                                    otherwise an "unavailable" shim) and the RED-family codec factory
 src/resample      r3dss_resample    tap tables, CPU per-plane resampler, output size planner
 src/resample_cuda r3dss_resample_cuda CUDA resampler (same math), built when a CUDA toolkit is found
 src/ratecontrol   r3dss_ratecontrol profiles, complexity estimator, VBR controller
@@ -21,7 +27,7 @@ bench             r3dss-bench       per-stage and end-to-end throughput
 tests             r3dss-tests       Catch2
 ```
 
-Dependency direction is strictly downward: core ← codec ← {codec_cdng, codec_nev, resample,
+Dependency direction is strictly downward: core ← codec ← {codec_cdng, codec_red ← codec_r3dsdk, resample,
 ratecontrol} ← pipeline ← {cli, gui, bench, tests}. Codec modules never leak SDK types.
 
 ## 2. Data flow per clip

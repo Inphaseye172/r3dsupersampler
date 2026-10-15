@@ -26,7 +26,7 @@ struct Row { std::string stage; double fps; double extra; std::string note; };
 
 int main(int argc, char** argv) {
     codec::registerBuiltinCodecs();
-    CLI::App app{"R3D Supersampler benchmark"};
+    CLI::App app{"Supersampler benchmark"};
     uint32_t w = 8256, h = 4644, frames = 10;
     std::string size = "UHD", jsonOut, tmpDir;
     bool noGpu = false, skipDisk = false;
@@ -153,8 +153,8 @@ int main(int argc, char** argv) {
         j["rows"].push_back({{"stage", r.stage}, {"fps", r.fps}, {"extra", r.extra}, {"note", r.note}});
     }
     if (!jsonOut.empty()) {
-        std::ofstream out(jsonOut);
-        out << j.dump(2);
+        std::ofstream jsonFile(jsonOut);
+        jsonFile << j.dump(2);
     }
     return 0;
 }

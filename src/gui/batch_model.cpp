@@ -75,6 +75,7 @@ bool BatchModel::addClip(const std::filesystem::path& source, const std::filesys
     auto info = reader->open(source);
     if (info) {
         row.probeOk = true;
+        if (!info->sourceLabel.empty()) row.format = QString::fromStdString(info->sourceLabel);
         row.resolution = QString("%1x%2").arg(info->width).arg(info->height);
         row.fps = QString::number(info->fps.toDouble(), 'f', 3);
         row.frames = QString::number(info->frameCount);

@@ -7,8 +7,7 @@ namespace r3dss::codec {
 const char* formatName(Format f) {
     switch (f) {
     case Format::CinemaDNG: return "CinemaDNG";
-    case Format::NEV: return "NEV";
-    case Format::R3DNE: return "R3D NE";
+    case Format::RedFamily: return "REDCODE";
     case Format::Memory: return "memory";
     case Format::Unknown: return "unknown";
     }
@@ -19,8 +18,9 @@ std::optional<Format> formatFromName(std::string_view s) {
     std::string l(s);
     std::transform(l.begin(), l.end(), l.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (l == "cinemadng" || l == "cdng" || l == "dng") return Format::CinemaDNG;
-    if (l == "nev" || l == "n-raw" || l == "nraw") return Format::NEV;
-    if (l == "r3dne" || l == "r3d ne" || l == "r3d-ne" || l == "r3d") return Format::R3DNE;
+    if (l == "redcode" || l == "red" || l == "r3d" || l == "r3dne" || l == "r3d ne" || l == "r3d-ne" || l == "nev" ||
+        l == "n-raw" || l == "nraw")
+        return Format::RedFamily;
     if (l == "memory") return Format::Memory;
     if (l == "keep" || l == "same") return std::nullopt;
     return std::nullopt;
@@ -29,12 +29,22 @@ std::optional<Format> formatFromName(std::string_view s) {
 const char* formatExtension(Format f) {
     switch (f) {
     case Format::CinemaDNG: return ".dng";
-    case Format::NEV: return ".NEV";
-    case Format::R3DNE: return ".R3D";
+    case Format::RedFamily: return ".R3D";
     case Format::Memory: return ".mem";
     case Format::Unknown: return "";
     }
     return "";
+}
+
+const char* sourceKindName(SourceKind k) {
+    switch (k) {
+    case SourceKind::Unknown: return "unknown";
+    case SourceKind::CinemaDng: return "CinemaDNG";
+    case SourceKind::RedcodeRaw: return "REDCODE RAW";
+    case SourceKind::NikonR3dNe: return "R3D NE";
+    case SourceKind::NikonNev: return "N-RAW NEV";
+    }
+    return "?";
 }
 
 CodecRegistry& CodecRegistry::instance() {

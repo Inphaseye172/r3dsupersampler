@@ -31,7 +31,7 @@ public:
     void setCallback(std::function<void(const LogRecord&)> cb);
 
     void log(LogLevel l, std::string_view category, std::string_view message);
-    // Default per-platform log directory (Windows: %LOCALAPPDATA%/R3DSupersampler/logs).
+    // Default per-platform log directory (Windows: %LOCALAPPDATA%/Supersampler/logs).
     static std::filesystem::path defaultLogDir();
 
 private:

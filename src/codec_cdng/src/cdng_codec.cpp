@@ -462,7 +462,7 @@ public:
         }
         raw.setU8(tag::DNGVersion, {1, 4, 0, 0});
         raw.setU8(tag::DNGBackwardVersion, {1, 1, 0, 0});
-        raw.setAscii(tag::UniqueCameraModel, m.cameraModel.empty() ? "R3D Supersampler" : m.cameraModel);
+        raw.setAscii(tag::UniqueCameraModel, m.cameraModel.empty() ? "Supersampler" : m.cameraModel);
         raw.setU8(tag::CFAPlaneColor, {0, 1, 2});
         raw.setU16(tag::CFALayout, {1});
         raw.setU16(tag::BlackLevelRepeatDim, {2, 2});

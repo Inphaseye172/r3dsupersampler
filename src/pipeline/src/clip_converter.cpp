@@ -133,9 +133,10 @@ ClipResult convertClip(const ClipJob& job, const JobOptions& options, const Clip
     auto outFactory = reg.byFormat(outFmt);
     if (!outFactory) return failWith(ClipStatus::Failed, std::string("no codec for output format ") + codec::formatName(outFmt));
     if (!outFactory->caps().write || !outFactory->status().usable())
-        return failWith(ClipStatus::Failed, outFmt == codec::Format::R3DNE
-                                                ? "R3D NE output is not available: no public REDCODE encoder exists"
-                                                : outFactory->displayName() + " cannot be written: " + outFactory->status().text);
+        return failWith(ClipStatus::Failed,
+                        outFmt == codec::Format::RedFamily
+                            ? "REDCODE cannot be written (no public encoder exists); choose CinemaDNG, ProRes or DNxHR output"
+                            : outFactory->displayName() + " cannot be written: " + outFactory->status().text);
 
     auto sizeR = resample::planOutputSize(info.width, info.height, options.size, options.customSize,
                                           outFactory->caps().dimAlignment);

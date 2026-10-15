@@ -6,7 +6,7 @@
 
 int main(int argc, char** argv) {
     QCoreApplication::setOrganizationName("Anchorpoint");
-    QCoreApplication::setApplicationName("R3DSupersampler");
+    QCoreApplication::setApplicationName("Supersampler");
     QApplication app(argc, argv);
     r3dss::codec::registerBuiltinCodecs();
     auto& logger = r3dss::Logger::instance();

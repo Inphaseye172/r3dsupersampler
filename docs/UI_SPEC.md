@@ -19,7 +19,7 @@ Left: table (`BatchModel`, `QTableView`, multi-row selection, progress-bar deleg
 | Column | Content |
 |---|---|
 | File | file / directory name (tooltip: full path + message) |
-| Format | CinemaDNG, NEV, R3D NE |
+| Format | source label detected from content: `REDCODE RAW (KOMODO 6K)`, `R3D NE (NIKON ZR)`, `N-RAW NEV (…)`, `CinemaDNG` |
 | Resolution | WxH from the probe |
 | FPS | frame rate |
 | Frames | frame count |
@@ -28,7 +28,7 @@ Left: table (`BatchModel`, `QTableView`, multi-row selection, progress-bar deleg
 | Progress | 0–100 % bar |
 | Message | plain sentence: result summary, skip reason or error |
 
-Buttons under the table: *Add files…* (NEV, R3D, DNG; a .dng selects its folder), *Add folder…*
+Buttons under the table: *Add files…* (R3D, NEV, DNG; a .dng selects its folder), *Add folder…*
 (scans with the folder-mode options), *Remove*, *Start* / *Run again*, *Pause* / *Resume*,
 *Cancel*. Add/Remove and all options are disabled while the batch is queued, running or paused.
 
@@ -37,7 +37,7 @@ Right: options.
 | Group | Control | Values |
 |---|---|---|
 | Output | Size | 6K (6048 × 3402), UHD (3840 × 2160), Full HD (1920 × 1080), Same resolution (VBR only) |
-| | Container | Keep source container, NEV (N-RAW), R3D NE (tooltip: not available, no public encoder), CinemaDNG |
+| | Container | CinemaDNG (default); Keep source container (CinemaDNG sources only; REDCODE cannot be written). ProRes 4444 / XQ and DNxHR 444 / HQX arrive in milestone 4 |
 | | Quality | Q1 Maximum quality, Q3 High, Q5 Normal (default), Q7 Proxy |
 | | Filter | Lanczos-3 (sharp, clip-aware), Area average (soft, lowest noise) |
 | | Output folder | path + Browse… (defaults to `<source>/supersampled` or `<folder>_supersampled`) |
@@ -77,8 +77,8 @@ Settings persist via `QSettings` (organisation "Anchorpoint", application "R3DSu
 
 ## Messages (verbatim)
 
-- "R3D NE output is not available: no public REDCODE encoder exists"
-- "NEV encoding needs the intoPIX TicoRAW SDK (not built in)"
+- "REDCODE cannot be written (no public encoder exists); choose CinemaDNG, ProRes or DNxHR output"
+- "cannot decode REDCODE frames: RED R3D SDK not built in: …" (Failed; install the SDK runtime)
 - "output already exists: <path>" (Skipped; enable Overwrite to replace)
 - "output WxH would be larger than source WxH" (Skipped; upscaling is never done)
 - "verification failed: <problem>; …" (Failed; the output is kept for inspection)

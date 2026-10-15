@@ -1,4 +1,4 @@
-// Finds raw clips (NEV / R3D NE files, CinemaDNG directories) and non-raw files under a root.
+// Finds raw clips (.R3D / NEV files in RED containers, CinemaDNG directories) and non-raw files under a root.
 #pragma once
 #include <filesystem>
 #include <vector>

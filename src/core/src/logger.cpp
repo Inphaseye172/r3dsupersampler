@@ -115,8 +115,8 @@ void Logger::log(LogLevel l, std::string_view category, std::string_view message
 
 std::filesystem::path Logger::defaultLogDir() {
 #ifdef _WIN32
-    if (const char* la = std::getenv("LOCALAPPDATA")) return std::filesystem::path(la) / "R3DSupersampler" / "logs";
-    return std::filesystem::temp_directory_path() / "R3DSupersampler" / "logs";
+    if (const char* la = std::getenv("LOCALAPPDATA")) return std::filesystem::path(la) / "Supersampler" / "logs";
+    return std::filesystem::temp_directory_path() / "Supersampler" / "logs";
 #else
     if (const char* x = std::getenv("XDG_DATA_HOME")) return std::filesystem::path(x) / "r3dss" / "logs";
     if (const char* h = std::getenv("HOME")) return std::filesystem::path(h) / ".local" / "share" / "r3dss" / "logs";

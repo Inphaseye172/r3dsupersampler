@@ -35,11 +35,11 @@ TEST_CASE("Job JSON round trip") {
     b.archiveMode = true;
     b.options.size = SizePreset::FHD;
     b.options.customSize = resample::OutputSize{100, 50};
-    b.options.outputFormat = codec::Format::NEV;
+    b.options.outputFormat = codec::Format::RedFamily;
     b.options.profile = QualityProfile::Q3_High;
     b.options.kernel = ResampleKernel::Area;
     b.options.overwrite = true;
-    b.clips.push_back({"/in/a.NEV", "/out", "a_out", "sub"});
+    b.clips.push_back({"/in/a.R3D", "/out", "a_out", "sub"});
     b.copies.push_back({"/in/x.txt", "/out/x.txt"});
     auto back = batchJobFromJson(batchJobToJson(b));
     REQUIRE(back);
@@ -47,7 +47,7 @@ TEST_CASE("Job JSON round trip") {
     REQUIRE(back->archiveMode);
     REQUIRE(back->options.size == SizePreset::FHD);
     REQUIRE(back->options.customSize->width == 100);
-    REQUIRE(*back->options.outputFormat == codec::Format::NEV);
+    REQUIRE(*back->options.outputFormat == codec::Format::RedFamily);
     REQUIRE(back->options.profile == QualityProfile::Q3_High);
     REQUIRE(back->options.kernel == ResampleKernel::Area);
     REQUIRE(back->options.overwrite);
@@ -55,7 +55,7 @@ TEST_CASE("Job JSON round trip") {
     REQUIRE(back->clips[0].outputName == "a_out");
     REQUIRE(back->copies[0].dest == fs::path("/out/x.txt"));
     REQUIRE_FALSE(batchJobFromJson("{not json"));
-    REQUIRE(expandName("{stem}_{size}_{profile}", "clip", b.options, codec::Format::NEV) == "clip_FHD_Q3");
+    REQUIRE(expandName("{stem}_{size}_{profile}", "clip", b.options, codec::Format::RedFamily) == "clip_FHD_Q3");
 }
 
 TEST_CASE("Memory clip through the full pipeline keeps geometry, audio and timecode") {
@@ -131,12 +131,12 @@ TEST_CASE("CinemaDNG clip end to end on disk with verification and output naming
     o.size = SizePreset::UHD;
     ClipResult r3 = convertClip(job, o, ctx);
     REQUIRE(r3.status == ClipStatus::Skipped);
-    // R3D NE output is refused with the documented reason
+    // REDCODE output is refused with the documented reason
     o.size = SizePreset::Same;
-    o.outputFormat = codec::Format::R3DNE;
+    o.outputFormat = codec::Format::RedFamily;
     ClipResult r4 = convertClip(job, o, ctx);
     REQUIRE(r4.status == ClipStatus::Failed);
-    REQUIRE(r4.message.find("no public REDCODE encoder") != std::string::npos);
+    REQUIRE(r4.message.find("REDCODE cannot be written") != std::string::npos);
 }
 
 TEST_CASE("Folder scan, archive copy with hash verification, scheduler and manifest") {
@@ -150,7 +150,7 @@ TEST_CASE("Folder scan, archive copy with hash verification, scheduler and manif
     REQUIRE(synth::writeSyntheticClip(dir / "src" / "day2" / "sub" / "B002", p));
     { std::ofstream(dir / "src" / "day1" / "notes.txt") << "hello"; }
     { std::ofstream(dir / "src" / "readme.md") << "root file"; }
-    { std::ofstream(dir / "src" / "fake.NEV") << "not really raw"; }
+    { std::ofstream(dir / "src" / "fake.R3D") << "not really raw"; }
     ScanOptions so;
     so.archiveMode = true;
     auto scan = scanFolder(dir / "src", dir / "dst", so);
@@ -158,7 +158,7 @@ TEST_CASE("Folder scan, archive copy with hash verification, scheduler and manif
     REQUIRE(scan->clips.size() == 2);
     REQUIRE(scan->clips[0].outputDir == dir / "dst" / "day1");
     REQUIRE(scan->clips[1].outputDir == dir / "dst" / "day2" / "sub");
-    REQUIRE(scan->copies.size() == 3); // notes.txt, readme.md, fake.NEV (not a RED container -> copied)
+    REQUIRE(scan->copies.size() == 3); // notes.txt, readme.md, fake.R3D (not a RED container -> copied)
     BatchJob job;
     job.name = "t";
     job.outputRoot = dir / "dst";
@@ -202,33 +202,4 @@ TEST_CASE("Cancellation stops a running clip") {
     ctx.progress = [&](const ClipProgress& pr) { if (pr.framesDone >= 2) ctx.cancel->cancel(); };
     ClipResult r = convertClip(job, o, ctx);
     REQUIRE(r.status == ClipStatus::Cancelled);
-}
-
-TEST_CASE("NEV and R3D NE stubs recognise RED containers and report their status") {
-    const fs::path dir = tmpDir("stub");
-    {
-        std::ofstream f(dir / "clip.NEV", std::ios::binary);
-        const unsigned char hdr[] = {0, 0, 0, 16, 'R', 'E', 'D', '2', 1, 2, 3, 4, 5, 6, 7, 8,
-                                     0, 0, 0, 12, 'R', 'D', 'V', '1', 9, 9, 9, 9};
-        f.write(reinterpret_cast<const char*>(hdr), sizeof hdr);
-    }
-    auto& reg = codec::CodecRegistry::instance();
-    auto f = reg.probe(dir / "clip.NEV");
-    REQUIRE(f);
-    REQUIRE(f->format() == codec::Format::NEV);
-    REQUIRE_FALSE(f->status().usable());
-    auto reader = f->makeReader();
-    auto info = reader->open(dir / "clip.NEV");
-    REQUIRE(info);
-    REQUIRE(std::get<int64_t>(info->meta.vendor.at("container.chunksSeen")) == 2);
-    BayerFrame fr;
-    REQUIRE(reader->readFrame(0, fr).error().code == ErrorCode::CodecUnavailable);
-    auto r3d = reg.byFormat(codec::Format::R3DNE);
-    REQUIRE(r3d);
-    REQUIRE_FALSE(r3d->caps().write);
-    ClipJob job{dir / "clip.NEV", dir / "out", "", ""};
-    JobOptions o;
-    ClipResult r = convertClip(job, o, ClipRunContext{});
-    REQUIRE(r.status == ClipStatus::Failed);
-    REQUIRE(r.message.find("TicoRAW") != std::string::npos);
 }

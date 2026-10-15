@@ -23,14 +23,15 @@ in-memory codec; `r3dss-cli synth` exposes the generator to users.
 | CinemaDNG | `test_cdng.cpp` | SMPTE timecode tag; writer → reader round trip (lossless JPEG and uncompressed) of samples, CFA, levels, fps, ISO, exposure, white balance, colour matrix, lens, DNGPrivateData blob, reel name, per-frame timecode, float32 audio |
 | pipeline | `test_pipeline.cpp` | job JSON round trip and naming; memory clip end to end (ordering, audio, timecode, equality with a direct resample); CinemaDNG disk end to end with verification, skip-if-exists, overwrite, upscale skip, R3D NE refusal; folder scan + archive copy + hash verify + scheduler + manifest; cancellation; NEV/R3D NE stub probe and status |
 | CUDA | `test_cuda.cpp` | CPU/CUDA parity ≤ 1 LSB for both kernels; skipped without a device |
+| RED container | `test_red_container.cpp` | synthetic container (3-char tags, versions, 4 KiB alignment, zero gaps, truncation); source detection from SDK metadata and header strings; RED-family factory honesty (reads only with the SDK, never writes) |
+| samples | `test_samples.cpp` | `[samples]`: SHA-256 of the Komodo clip, 98 chunks, tag histogram, `REDCODE RAW (KOMODO 6K)` label; skipped without `R3DSS_SAMPLES` |
 
-## 3. Integration tests (need real clips)
+## 3. Integration tests (sample clips)
 
-Set `R3DSS_SAMPLES=<dir>` with Nikon ZR R3D NE / NEV and Z9 / Z8 N-RAW samples (not committed).
-Until the TicoRAW module exists these only exercise probing: `r3dss-cli probe <clip>` must list
-the container chunks. With the module (tasks 10–12, 22): full conversions of each sample at
-every preset, and the verifier's checks (frame count, resolution, duration, audio channels and
-sample count, start timecode, first/last frame decode).
+`scripts/fetch_samples.py` downloads the `samples-v1` release (RED KOMODO 6K clip, CC0) into
+`$R3DSS_SAMPLES` and verifies its SHA-256; CI caches it. Without the RED SDK the tests cover the
+container and detection only; with the SDK (CI secrets `R3DSDK_ZIP_URL` / `R3DSDK_TOKEN`) milestones
+2–6 add decode → resample → encode → verify runs on the sample.
 
 Manual Resolve checklist for every release:
 1. Import an output CinemaDNG folder (and NEV once available) into Resolve 20.

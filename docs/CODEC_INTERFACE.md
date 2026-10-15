@@ -92,23 +92,19 @@ CodecRegistry::instance().registerFactory(f); byFormat(Format); probe(path); all
 void registerBuiltinCodecs();   // CinemaDNG, NEV, R3D NE, memory
 ```
 
-## Stub behaviour (today)
+## RED family module (today)
 
-`NEV` and `R3D NE` factories (`codec_nev`): `probe()` accepts `.nev` / `.r3d` whose first chunk
-tag starts with `RED`; `makeReader()->open()` lists top-level chunks (count, first tag) into
-`meta.vendor["container.*"]`; `readFrame`, `readAudio`, `frameTimecode` return
-`ErrorCode::CodecUnavailable` with a sentence naming the missing SDK; the writer returns the
-same for NEV and `ErrorCode::Unsupported` ("no public REDCODE encoder exists") for R3D NE.
-`status()` is `MissingSdk` with the text shown in Settings → Codec modules.
+`Format::RedFamily` covers REDCODE RAW (`.R3D`), Nikon R3D NE (`.R3D`) and NEV. `ClipInfo` carries
+`sourceKind` / `sourceLabel` detected from content (`codec_red/red_detect.hpp`), e.g.
+`REDCODE RAW (KOMODO 6K)`. The factory lives in `codec_r3dsdk` and always registers:
 
-## Adding the TicoRAW module (tasks 10–12, 22)
-
-1. Implement `ITicoRawCodec` (`codec_nev/nev_codec.hpp`) against the intoPIX SDK behind
-   `R3DSS_WITH_TICORAW`; `makeTicoRawCodec()` returns it.
-2. Replace the chunk walker's opaque payloads with real header/index/frame parsing learned from
-   samples (task 10).
-3. Map container metadata into `ClipMetadata` (task 12) and keep unknown blobs in `opaque`.
-4. The factory's `caps()` already flips `read/write/cuda/lossless` when the adapter exists.
+- `probe()` = extension `.r3d` / `.nev` **and** a RED chunk header (`codec_red/red_container.hpp`).
+- `makeReader()` returns the SDK-backed reader when the build has the RED R3D SDK and its runtime
+  libraries were found (milestone 2); otherwise a container-only reader whose `open()` fills the
+  container facts (`meta.vendor["container.*"]`, `header.timecode*`, camera model) and whose frame
+  and audio calls fail with `ErrorCode::CodecUnavailable` and the SDK status text.
+- `makeWriter()` always fails with `ErrorCode::Unsupported`: REDCODE cannot be written.
+- `status()`: `MissingSdk` (not built / runtime not found) or `Available`.
 
 The in-memory codec (`codec/memory_codec.hpp`, paths `mem://name`) implements the same interface
 and is what the pipeline tests and the benchmark use.

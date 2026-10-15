@@ -20,8 +20,12 @@ Container rules (these contradict the current `src/codec_nev/src/red_container.c
 | Metadata | Header and trailer carry a TLV list (2-byte length, 2-byte key, value) with camera model, serial, firmware, reel/clip, date, start/end timecode, lens, format name, colour/ISO floats. Each `RDI` frame repeats a ~4.6 KB metadata block before the payload. |
 | Frame payload | Starts ≈ 4,736 bytes into the `RDI` chunk, entropy 7.77 bits/byte (compressed), trailing zero padding to 4 KiB. |
 
-Fix required in `red_container.cpp`: parse `tag[3] + ver`, honour 4 KiB alignment, skip zero
-gaps. Then `listChunks` returns all 98 chunks instead of one.
+Fixed in `src/codec_red/src/red_container.cpp` (milestone 1): parses `tag[3] + ver`, honours 4 KiB
+alignment, skips zero gaps; `listChunks` returns all 98 chunks. Note: the header "TLV" layout above
+is approximate — no clean (length, key, value) chain parses from any start offset between 8 and 40
+in either byte order, so the code reads the header's printable strings instead (camera model,
+sensor, serial, firmware, clip name, format, edge and absolute timecodes are all present as plain
+ASCII).
 
 ## 2. JPEG XS marker check — Komodo clip
 

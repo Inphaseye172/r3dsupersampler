@@ -9,7 +9,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
-#include <QStandardItemModel>
 #include <QPushButton>
 #include <QTableView>
 #include <QVBoxLayout>
@@ -40,14 +39,8 @@ BatchTab::BatchTab(const AppSettings& settings, QWidget* parent) : QWidget(paren
     sizeBox_->addItems({"6K (6048 x 3402)", "UHD (3840 x 2160)", "Full HD (1920 x 1080)", "Same resolution (VBR only)"});
     sizeBox_->setCurrentIndex(1);
     containerBox_ = new QComboBox(this);
-    containerBox_->addItems({"Keep source container", "NEV (N-RAW)", "R3D NE", "CinemaDNG"});
-    {
-        auto nev = codec::CodecRegistry::instance().byFormat(codec::Format::NEV);
-        auto* m = qobject_cast<QStandardItemModel*>(containerBox_->model());
-        Q_UNUSED(m);
-        if (nev && !nev->caps().write) containerBox_->setItemData(1, QString::fromStdString(nev->status().text), Qt::ToolTipRole);
-        containerBox_->setItemData(2, "R3D NE output is not available: no public REDCODE encoder exists.", Qt::ToolTipRole);
-    }
+    containerBox_->addItems({"CinemaDNG", "Keep source container (CinemaDNG sources only)"});
+    containerBox_->setItemData(1, "REDCODE cannot be written; REDCODE sources must choose an output format.", Qt::ToolTipRole);
     profileBox_ = new QComboBox(this);
     profileBox_->addItems({"Q1 Maximum quality", "Q3 High", "Q5 Normal", "Q7 Proxy"});
     profileBox_->setCurrentIndex(2);
@@ -161,7 +154,7 @@ void BatchTab::updateButtons() {
 
 void BatchTab::onAddFiles() {
     const QStringList files = QFileDialog::getOpenFileNames(this, "Add raw clips", settings_.lastInputDir,
-                                                            "Raw clips (*.NEV *.nev *.R3D *.r3d *.dng);;All files (*)");
+                                                            "Raw clips (*.R3D *.r3d *.NEV *.nev *.dng);;All files (*)");
     if (files.isEmpty()) return;
     settings_.lastInputDir = QFileInfo(files.front()).absolutePath();
     QStringList rejected;
@@ -227,12 +220,8 @@ pipeline::BatchJob BatchTab::buildJob() const {
     settings_.applyTo(job.options);
     static const SizePreset sizes[] = {SizePreset::SixK, SizePreset::UHD, SizePreset::FHD, SizePreset::Same};
     job.options.size = sizes[std::clamp(sizeBox_->currentIndex(), 0, 3)];
-    switch (containerBox_->currentIndex()) {
-    case 1: job.options.outputFormat = codec::Format::NEV; break;
-    case 2: job.options.outputFormat = codec::Format::R3DNE; break;
-    case 3: job.options.outputFormat = codec::Format::CinemaDNG; break;
-    default: job.options.outputFormat.reset();
-    }
+    if (containerBox_->currentIndex() == 0) job.options.outputFormat = codec::Format::CinemaDNG;
+    else job.options.outputFormat.reset();
     static const QualityProfile profiles[] = {QualityProfile::Q1_Maximum, QualityProfile::Q3_High, QualityProfile::Q5_Normal,
                                               QualityProfile::Q7_Proxy};
     job.options.profile = profiles[std::clamp(profileBox_->currentIndex(), 0, 3)];

@@ -6,6 +6,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include "r3dss/codec/codec.hpp"
+#include "r3dss/codec_red/red_container.hpp"
 #include "r3dss/core/hardware.hpp"
 #include "r3dss/core/logger.hpp"
 #include "r3dss/pipeline/folder_scanner.hpp"
@@ -41,7 +42,7 @@ int cmdCodecs() {
     return 0;
 }
 
-int cmdProbe(const std::string& path) {
+int cmdProbe(const std::string& path, bool chunks) {
     auto f = codec::CodecRegistry::instance().probe(path);
     if (!f) {
         std::cerr << "not a recognised raw clip: " << path << "\n";
@@ -55,6 +56,7 @@ int cmdProbe(const std::string& path) {
     }
     nlohmann::json j;
     j["format"] = codec::formatName(info->format);
+    j["source"] = info->sourceLabel.empty() ? codec::sourceKindName(info->sourceKind) : info->sourceLabel;
     j["module"] = f->status().text;
     j["width"] = info->width;
     j["height"] = info->height;
@@ -77,6 +79,24 @@ int cmdProbe(const std::string& path) {
     if (info->meta.lens) j["lens"] = info->meta.lens->model;
     for (const auto& [k, v] : info->meta.vendor)
         std::visit([&](const auto& x) { j["vendor"][k] = x; }, v);
+    if (chunks && info->format == codec::Format::RedFamily) {
+        auto list = codec::red::listChunks(path);
+        if (!list) {
+            std::cerr << "chunk walk failed: " << list.error().toString() << "\n";
+            return 4;
+        }
+        j["chunks"] = nlohmann::json::array();
+        for (const auto& c : *list)
+            j["chunks"].push_back({{"offset", c.offset}, {"size", c.size}, {"tag", c.tag}, {"version", c.version}});
+        for (const auto& [tag, st] : codec::red::chunkHistogram(*list)) {
+            nlohmann::json v = nlohmann::json::array();
+            for (uint8_t ver : st.versions) v.push_back(ver);
+            j["chunkHistogram"][tag] = {{"count", st.count}, {"bytes", st.totalBytes}, {"minSize", st.minSize},
+                                        {"maxSize", st.maxSize}, {"versions", v}};
+        }
+        auto strings = codec::red::readHeaderStrings(path);
+        if (strings) j["headerStrings"] = *strings;
+    }
     std::cout << j.dump(2) << "\n";
     return 0;
 }
@@ -122,15 +142,17 @@ int runBatch(const pipeline::BatchJob& job, bool quiet) {
 
 int main(int argc, char** argv) {
     codec::registerBuiltinCodecs();
-    CLI::App app{"R3D Supersampler command line"};
+    CLI::App app{"Supersampler command line (r3dss-cli)"};
     app.require_subcommand(1);
     std::string logLevel = "info";
     app.add_option("--log-level", logLevel, "trace|debug|info|warn|error");
 
     auto* codecs = app.add_subcommand("codecs", "List codec modules and their status");
     std::string probePath;
+    bool probeChunks = false;
     auto* probe = app.add_subcommand("probe", "Print clip information as JSON");
     probe->add_option("path", probePath, "clip file or CinemaDNG directory")->required();
+    probe->add_flag("--chunks", probeChunks, "also list the RED container chunks, tag histogram and header strings");
 
     // convert
     auto* convert = app.add_subcommand("convert", "Convert clips or run a job file");
@@ -143,7 +165,7 @@ int main(int argc, char** argv) {
     convert->add_option("--job", jobFile, "batch job JSON (overrides the other options)");
     convert->add_option("--size", size, "6K|UHD|FHD|same|WxH");
     convert->add_option("--profile", profile, "Q1|Q3|Q5|Q7");
-    convert->add_option("--format", format, "keep|cdng|nev|r3dne");
+    convert->add_option("--format,--container", format, "keep|cdng (ProRes / DNxHR arrive in milestone 4)");
     convert->add_option("--kernel", kernel, "lanczos3|area");
     convert->add_option("--parallel", parallel, "max parallel clips (0 = auto)");
     convert->add_option("--threads", threads, "max threads (0 = all)");
@@ -167,7 +189,7 @@ int main(int argc, char** argv) {
     scan->add_flag("--run", run, "run the job immediately");
     scan->add_option("--size", size, "6K|UHD|FHD|same|WxH");
     scan->add_option("--profile", profile, "Q1|Q3|Q5|Q7");
-    scan->add_option("--format", format, "keep|cdng|nev|r3dne");
+    scan->add_option("--format,--container", format, "keep|cdng");
     scan->add_flag("--no-gpu", noGpu, "force the CPU resampler");
     scan->add_flag("--overwrite", overwrite, "replace existing outputs");
 
@@ -226,7 +248,7 @@ int main(int argc, char** argv) {
     };
 
     if (codecs->parsed()) return cmdCodecs();
-    if (probe->parsed()) return cmdProbe(probePath);
+    if (probe->parsed()) return cmdProbe(probePath, probeChunks);
     if (synthCmd->parsed()) {
         synth::SynthClipParams p;
         p.frame.width = sw;

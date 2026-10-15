@@ -10,3 +10,10 @@ CMakeUserPresets.json
 vcpkg_installed/
 *.log
 /dist/
+# proprietary SDKs and downloaded footage never enter git
+.deps/r3dsdk/
+*.R3D
+*.r3d
+*.NEV
+*.nev
+*.zip
