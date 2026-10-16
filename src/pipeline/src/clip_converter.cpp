@@ -283,6 +283,13 @@ ClipResult convertClip(const ClipJob& jobIn, const JobOptions& options, const Cl
     wc.startTimecode = info.startTimecode;
     wc.meta = info.meta;
     wc.lossless = options.lossless;
+    wc.sourceWidth = info.width;
+    wc.sourceHeight = info.height;
+    // CinemaDNG to CinemaDNG: the audio sidecars are copied byte for byte (audio is never resampled), so
+    // formats the stream path cannot decode, extra sidecars and BWF chunks all survive.
+    const bool copyAudio = info.format == codec::Format::CinemaDNG && outFmt == codec::Format::CinemaDNG && !info.audioSidecars.empty();
+    if (copyAudio) wc.copyAudioFiles = info.audioSidecars;
+    for (const auto& w : info.warnings) res.warnings.push_back(w);
     auto writer = outFactory->makeWriter();
     OutputGuard guard{writer.get(), &claim, true}; // any return before publication removes the partial output
     if (auto b = writer->begin(wc); !b) return failWith(ClipStatus::Failed, "cannot start output: " + b.error().toString());
@@ -385,7 +392,7 @@ ClipResult convertClip(const ClipJob& jobIn, const JobOptions& options, const Cl
 
     // Audio passthrough in one-second blocks
     int64_t audioSamples = 0;
-    if (info.audio.present()) {
+    if (info.audio.present() && !copyAudio) {
         report({N, N, 0.0, "audio"});
         const int64_t block = std::max<int64_t>(1, info.audio.sampleRate);
         int64_t pos = 0;
@@ -397,7 +404,15 @@ ClipResult convertClip(const ClipJob& jobIn, const JobOptions& options, const Cl
             if (auto w = writer->writeAudio(*ab); !w) { writer->abort(); return failWith(ClipStatus::Failed, "audio write: " + w.error().toString()); }
             audioSamples += ab->sampleCount;
             pos += ab->sampleCount;
-            if (ab->sampleCount < block) break;
+            if (ab->sampleCount < block) {
+                // A short block is the end of the track only when the track says so.
+                if (info.audio.sampleCount > 0 && pos < info.audio.sampleCount) {
+                    writer->abort();
+                    return failWith(ClipStatus::Failed, "audio read stopped at sample " + std::to_string(pos) + " of " +
+                                                            std::to_string(info.audio.sampleCount));
+                }
+                break;
+            }
         }
     }
     auto summary = writer->finish();

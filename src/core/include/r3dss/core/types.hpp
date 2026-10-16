@@ -54,8 +54,20 @@ struct Timecode {
 };
 
 // ---- Frames ---------------------------------------------------------------------------------
+// A TIFF/DNG tag carried through verbatim (values little-endian, as a TIFF writer emits them).
+struct RawTag {
+    uint16_t tag = 0;
+    uint16_t type = 0; // TIFF field type
+    uint32_t count = 0;
+    std::vector<uint8_t> bytes;
+    bool operator==(const RawTag&) const = default;
+};
+
 struct FrameMetadata {
     std::optional<Timecode> timecode;
+    // CinemaDNG sources: this frame's resolution-independent tags (colour, exposure, identity,
+    // TimeCodes, FrameRate...) for IFD0 and for the EXIF IFD, copied to the output frame verbatim.
+    std::vector<RawTag> dngTags, exifTags;
     std::optional<double> exposureTimeSec;
     std::optional<uint32_t> iso;
     std::map<std::string, std::string> extra; // per-frame key/values carried through verbatim
@@ -154,8 +166,20 @@ struct SampleEncoding {
     std::vector<uint16_t> linearizationTable; // code -> linear value, non-decreasing; empty = linear codes
 };
 
+// Resolution-dependent DNG framing, relative to the frames a reader returns (after the ActiveArea crop).
+struct DngGeometry {
+    std::optional<std::array<double, 2>> cropOrigin, cropSize; // DefaultCropOrigin / DefaultCropSize (H, V)
+    std::optional<std::array<double, 2>> scale;                // DefaultScale (H, V)
+    std::vector<uint8_t> opcodeList2, opcodeList3;             // area-based opcodes, rescaled by the writer
+};
+
 struct ClipMetadata {
     SampleEncoding sampleEncoding;
+    // Set by the CinemaDNG reader: the source's own tags are carried through (FrameMetadata::dngTags), so
+    // a writer must not invent tags the source did not have (FrameRate, TimeCodes).
+    bool dngPassthrough = false;
+    std::vector<RawTag> dngTags, exifTags; // frame 0's, for writers that get frames without them
+    DngGeometry dngGeometry;
     std::string cameraMake, cameraModel, cameraSerial, firmware;
     std::optional<uint32_t> iso;
     std::optional<double> exposureTimeSec;

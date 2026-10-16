@@ -5,6 +5,7 @@ add_executable(r3dss-tests
   test_ratecontrol.cpp
   test_ljpeg_tiff_wav.cpp
   test_cdng.cpp
+  test_cdng_meta.cpp
   test_cdng_reader.cpp
   test_cdng_golden.cpp
   test_pipeline.cpp

@@ -62,6 +62,10 @@ struct ClipInfo {
     AudioInfo audio;
     std::optional<Timecode> startTimecode;
     ClipMetadata meta;
+    // CinemaDNG: every audio sidecar of the clip, the main one first (copied byte for byte when the
+    // output is CinemaDNG too), and anything the reader could not carry over faithfully.
+    std::vector<std::filesystem::path> audioSidecars;
+    std::vector<std::string> warnings;
     uint64_t sourceBytes = 0; // total bytes on disk (for bitrate reporting)
     double durationSeconds() const { return fps.toDouble() > 0 ? static_cast<double>(frameCount) / fps.toDouble() : 0.0; }
 };
@@ -103,6 +107,10 @@ struct WriterConfig {
     std::optional<Timecode> startTimecode;
     ClipMetadata meta;
     bool lossless = false; // request lossless where the codec supports it
+    // Size of the source frames (for rescaling crop / aspect / opcode geometry); 0 = unknown.
+    uint32_t sourceWidth = 0, sourceHeight = 0;
+    // Audio files to copy byte for byte into the output instead of a streamed track (main one first).
+    std::vector<std::filesystem::path> copyAudioFiles;
 };
 
 struct FrameBudget {

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include "r3dss/codec_cdng/ljpeg.hpp"
 #include "r3dss/codec_cdng/tiff.hpp"
 #include "r3dss/codec_cdng/wav.hpp"
@@ -46,12 +47,30 @@ std::pair<int32_t, int32_t> toSRational(double v, int32_t den = 10000) {
 
 } // namespace
 
+namespace {
+int nominalRate(Rational fps) {
+    const double r = fps.toDouble();
+    return r > 0 ? static_cast<int>(std::ceil(r - 1e-6)) : 0;
+}
+// SMPTE ST 12-1 carries at most 30 frame numbers: above 30 fps the frame-number field holds frame pairs
+// and the field flag marks the second frame of a pair (bit 59 in 50 Hz systems, bit 15 in 60 Hz ones).
+std::pair<int, uint8_t> fieldFlag(Rational fps) {
+    return nominalRate(fps) % 25 == 0 ? std::pair<int, uint8_t>{3, 0x80} : std::pair<int, uint8_t>{1, 0x80};
+}
+} // namespace
+
 std::array<uint8_t, 8> encodeSmpteTimecode(const Timecode& tc) {
     std::array<uint8_t, 8> b{};
-    b[0] = static_cast<uint8_t>(toBcd(tc.frames) | (tc.dropFrame ? 0x40 : 0));
+    const bool pairs = nominalRate(tc.fps) > 30;
+    const int frames = pairs ? tc.frames / 2 : tc.frames;
+    b[0] = static_cast<uint8_t>(toBcd(std::clamp(frames, 0, 39)) | (tc.dropFrame ? 0x40 : 0));
     b[1] = toBcd(tc.seconds);
     b[2] = toBcd(tc.minutes);
     b[3] = toBcd(tc.hours);
+    if (pairs && (tc.frames & 1)) {
+        const auto [byte, bit] = fieldFlag(tc.fps);
+        b[static_cast<size_t>(byte)] |= bit;
+    }
     return b;
 }
 
@@ -63,6 +82,10 @@ Timecode decodeSmpteTimecode(const uint8_t* b, Rational fps) {
     tc.seconds = fromBcd(b[1] & 0x7F);
     tc.minutes = fromBcd(b[2] & 0x7F);
     tc.hours = fromBcd(b[3] & 0x3F);
+    if (nominalRate(fps) > 30) {
+        const auto [byte, bit] = fieldFlag(fps);
+        tc.frames = tc.frames * 2 + ((b[byte] & bit) ? 1 : 0);
+    }
     return tc;
 }
 
@@ -482,6 +505,308 @@ Expected<FrameLayout> layoutOf(const Ifd& ifd) {
     return fl;
 }
 
+// ---- Metadata carried through verbatim -------------------------------------------------------
+namespace {
+
+// Resolution-independent IFD0 tags copied from the source frame (IFD0 of a SubIFD layout, overridden
+// by the raw IFD). Geometry-dependent tags (crop, ActiveArea, opcodes, noise model, unique raw data ID)
+// are not in this list: they are rescaled separately or dropped.
+constexpr uint16_t kDngPassthrough[] = {
+    270,   // ImageDescription
+    271,   // Make
+    272,   // Model
+    274,   // Orientation
+    306,   // DateTime
+    315,   // Artist
+    33432, // Copyright
+    33434, // ExposureTime (TIFF/EP)
+    33437, // FNumber (TIFF/EP)
+    34855, // ISOSpeedRatings (TIFF/EP)
+    36867, // DateTimeOriginal (TIFF/EP)
+    37386, // FocalLength (TIFF/EP)
+    50706, // DNGVersion
+    50707, // DNGBackwardVersion
+    50708, // UniqueCameraModel
+    50709, // LocalizedCameraModel
+    50721, 50722, // ColorMatrix1/2
+    50723, 50724, // CameraCalibration1/2
+    50725, 50726, // ReductionMatrix1/2
+    50727, // AnalogBalance
+    50728, // AsShotNeutral
+    50729, // AsShotWhiteXY
+    50730, // BaselineExposure
+    50731, // BaselineNoise
+    50732, // BaselineSharpness
+    50734, // LinearResponseLimit
+    50735, // CameraSerialNumber
+    50736, // LensInfo
+    50739, // ShadowScale
+    50740, // DNGPrivateData
+    50741, // MakerNoteSafety
+    50778, 50779, // CalibrationIlluminant1/2
+    50780, // BestQualityScale
+    50831, 50832, 50833, 50834, // AsShotICCProfile, AsShotPreProfileMatrix, CurrentICCProfile, CurrentPreProfileMatrix
+    50931, 50932, // CameraCalibrationSignature, ProfileCalibrationSignature
+    50934, 50935, 50936, // AsShotProfileName, NoiseReductionApplied, ProfileName
+    50937, 50938, 50939, 50940, 50941, 50942, // ProfileHueSatMap*, ProfileToneCurve, ProfileEmbedPolicy, ProfileCopyright
+    50964, 50965, // ForwardMatrix1/2
+    50981, 50982, // ProfileLookTableDims/Data
+    51043, // TimeCodes
+    51044, // FrameRate
+    51058, // TStop
+    51081, // ReelName
+    51105, // CameraLabel
+    51107, 51108, 51109, 51110, // ProfileHueSatMapEncoding, ProfileLookTableEncoding, BaselineExposureOffset, DefaultBlackRender
+    51125, // DefaultUserCrop (relative to the default crop)
+    52529, 52530, 52531, 52532, 52533, 52534, 52535, 52536, 52537, // DNG 1.6 triple-illuminant colour
+};
+
+// EXIF IFD tags copied verbatim (camera, lens and exposure facts; nothing with offsets such as MakerNote).
+constexpr uint16_t kExifPassthrough[] = {
+    33434, 33437, 34850, 34855, 34864, 34866, 34867, 36864, 36867, 36868, 37377, 37378, 37379, 37380,
+    37381, 37383, 37385, 37386, 41987, 41989, 42032, 42033, 42034, 42035, 42036, 42037,
+};
+
+RawTag toRawTag(const tiff::Entry& e) {
+    RawTag t;
+    t.tag = e.tag;
+    t.type = static_cast<uint16_t>(e.type);
+    t.count = e.count;
+    t.bytes = e.data;
+    if (e.bigEndian) {
+        // Swap each element (each half of a rational) to little-endian.
+        uint32_t k = tiff::typeSize(e.type);
+        if (e.type == tiff::Type::Rational || e.type == tiff::Type::SRational) k = 4;
+        if (k > 1)
+            for (size_t i = 0; i + k <= t.bytes.size(); i += k) std::reverse(t.bytes.begin() + static_cast<long>(i), t.bytes.begin() + static_cast<long>(i + k));
+    }
+    return t;
+}
+
+tiff::Entry toEntry(const RawTag& t) {
+    tiff::Entry e;
+    e.tag = t.tag;
+    e.type = static_cast<tiff::Type>(t.type);
+    e.count = t.count;
+    e.data = t.bytes;
+    return e;
+}
+
+template <size_t N>
+std::vector<RawTag> collectTags(const tiff::Ifd& merged, const uint16_t (&list)[N]) {
+    std::vector<RawTag> out;
+    for (uint16_t tg : list)
+        if (const tiff::Entry* e = merged.find(tg); e && e->count) out.push_back(toRawTag(*e));
+    return out;
+}
+
+// IFD0 entries overridden by the raw IFD (identical when the raw image is IFD0 itself).
+tiff::Ifd mergedIfd(const tiff::Reader& r, const tiff::Ifd& raw) {
+    tiff::Ifd m;
+    if (auto ifd0 = r.readIfd(r.firstIfdOffset())) m.entries = ifd0->entries;
+    for (const auto& [k, v] : raw.entries) m.entries[k] = v;
+    return m;
+}
+
+// ---- DNG opcode lists (always big-endian) ------------------------------------------------------
+struct Opcode {
+    uint32_t id = 0, version = 0, flags = 0;
+    std::vector<uint8_t> params;
+    bool optional() const { return flags & 1u; }
+};
+
+uint32_t be32(const uint8_t* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
+void putBe32(std::vector<uint8_t>& v, size_t at, uint32_t x) {
+    v[at] = uint8_t(x >> 24); v[at + 1] = uint8_t(x >> 16); v[at + 2] = uint8_t(x >> 8); v[at + 3] = uint8_t(x);
+}
+void appendBe32(std::vector<uint8_t>& v, uint32_t x) {
+    v.push_back(uint8_t(x >> 24)); v.push_back(uint8_t(x >> 16)); v.push_back(uint8_t(x >> 8)); v.push_back(uint8_t(x));
+}
+
+std::optional<std::vector<Opcode>> parseOpcodes(const std::vector<uint8_t>& b) {
+    if (b.size() < 4) return std::nullopt;
+    const uint32_t n = be32(b.data());
+    std::vector<Opcode> ops;
+    size_t at = 4;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (at + 16 > b.size()) return std::nullopt;
+        Opcode o;
+        o.id = be32(&b[at]);
+        o.version = be32(&b[at + 4]);
+        o.flags = be32(&b[at + 8]);
+        const uint32_t len = be32(&b[at + 12]);
+        at += 16;
+        if (len > b.size() - at) return std::nullopt;
+        o.params.assign(b.begin() + static_cast<long>(at), b.begin() + static_cast<long>(at + len));
+        at += len;
+        ops.push_back(std::move(o));
+    }
+    return ops;
+}
+
+std::vector<uint8_t> serializeOpcodes(const std::vector<Opcode>& ops) {
+    std::vector<uint8_t> b;
+    appendBe32(b, static_cast<uint32_t>(ops.size()));
+    for (const auto& o : ops) {
+        appendBe32(b, o.id);
+        appendBe32(b, o.version);
+        appendBe32(b, o.flags);
+        appendBe32(b, static_cast<uint32_t>(o.params.size()));
+        b.insert(b.end(), o.params.begin(), o.params.end());
+    }
+    return b;
+}
+
+const char* opcodeName(uint32_t id) {
+    static const char* names[] = {"?", "WarpRectilinear", "WarpFisheye", "FixVignetteRadial", "FixBadPixelsConstant",
+                                  "FixBadPixelsList", "TrimBounds", "MapTable", "MapPolynomial", "GainMap",
+                                  "DeltaPerRow", "DeltaPerColumn", "ScalePerRow", "ScalePerColumn", "WarpRectilinear2"};
+    return id < std::size(names) ? names[id] : "unknown";
+}
+
+// Opcodes whose parameters start with an area (Top, Left, Bottom, Right) in image coordinates.
+bool isAreaOpcode(uint32_t id) { return id == 6 || id == 7 || id == 8 || id == 9; }
+// Opcodes defined in normalised coordinates: valid at any resolution.
+bool isNormalisedOpcode(uint32_t id) { return id == 1 || id == 2 || id == 3 || id == 14; }
+
+// OpcodeList2/3 as read: area opcodes shifted from the declared ActiveArea origin to the returned crop,
+// normalised ones kept, everything else dropped (with a warning unless the opcode is optional).
+std::vector<uint8_t> filterAreaOpcodes(const std::vector<uint8_t>& bytes, int dx, int dy, const char* listName,
+                                       std::vector<std::string>& warnings) {
+    auto ops = parseOpcodes(bytes);
+    if (!ops) {
+        warnings.push_back(std::string(listName) + " is malformed and was dropped");
+        return {};
+    }
+    std::vector<Opcode> keep;
+    for (auto& o : *ops) {
+        if (isNormalisedOpcode(o.id)) {
+            keep.push_back(std::move(o));
+        } else if (isAreaOpcode(o.id) && o.params.size() >= 16) {
+            const auto shift = [&](size_t at, int d) {
+                const int64_t v = std::max<int64_t>(0, static_cast<int64_t>(be32(&o.params[at])) - d);
+                putBe32(o.params, at, static_cast<uint32_t>(v));
+            };
+            shift(0, dy); shift(4, dx); shift(8, dy); shift(12, dx);
+            keep.push_back(std::move(o));
+        } else if (!o.optional()) {
+            warnings.push_back(std::string(listName) + " opcode " + opcodeName(o.id) +
+                               " depends on the source resolution and was not carried over");
+        }
+    }
+    return keep.empty() ? std::vector<uint8_t>{} : serializeOpcodes(keep);
+}
+
+// Rescales the areas of an opcode list for an output sx (H) x sy (V) times the source size. A pitch > 1
+// selects CFA sites by the area's start phase, so the scaled start keeps its phase modulo the pitch.
+std::vector<uint8_t> rescaleAreaOpcodes(const std::vector<uint8_t>& bytes, double sx, double sy, uint32_t outW, uint32_t outH) {
+    auto ops = parseOpcodes(bytes);
+    if (!ops) return {};
+    for (auto& o : *ops) {
+        if (!isAreaOpcode(o.id) || o.params.size() < 16) continue;
+        const uint32_t top = be32(&o.params[0]), left = be32(&o.params[4]), bottom = be32(&o.params[8]), right = be32(&o.params[12]);
+        uint32_t rowPitch = 1, colPitch = 1;
+        if (o.id != 6 && o.params.size() >= 32) {
+            rowPitch = std::max<uint32_t>(1, be32(&o.params[24]));
+            colPitch = std::max<uint32_t>(1, be32(&o.params[28]));
+        }
+        const auto start = [](uint32_t v, double s, uint32_t pitch, uint32_t limit) {
+            const uint32_t phase = v % pitch;
+            uint64_t base = static_cast<uint64_t>(std::floor(v * s / pitch)) * pitch + phase;
+            return static_cast<uint32_t>(std::min<uint64_t>(base, limit));
+        };
+        const auto end = [](uint32_t v, double s, uint32_t limit) {
+            return static_cast<uint32_t>(std::min<uint64_t>(static_cast<uint64_t>(std::ceil(v * s - 1e-9)), limit));
+        };
+        putBe32(o.params, 0, start(top, sy, rowPitch, outH));
+        putBe32(o.params, 4, start(left, sx, colPitch, outW));
+        putBe32(o.params, 8, std::max(be32(&o.params[0]), end(bottom, sy, outH)));
+        putBe32(o.params, 12, std::max(be32(&o.params[4]), end(right, sx, outW)));
+    }
+    return serializeOpcodes(*ops);
+}
+
+// OpcodeList1 FixBadPixelsConstant / FixBadPixelsList, applied to a decoded frame (raw coordinates
+// shifted by the crop origin) by averaging the nearest same-colour sites that are not bad themselves.
+struct BadPixels {
+    std::optional<uint32_t> constant;
+    std::vector<std::array<uint32_t, 2>> points;     // row, col (raw image)
+    std::vector<std::array<uint32_t, 4>> rects;      // top, left, bottom, right (raw image)
+    bool empty() const { return !constant && points.empty() && rects.empty(); }
+};
+
+BadPixels parseBadPixels(const std::vector<uint8_t>& list1, std::vector<std::string>& warnings) {
+    BadPixels bp;
+    auto ops = parseOpcodes(list1);
+    if (!ops) {
+        warnings.push_back("OpcodeList1 is malformed and was not applied");
+        return bp;
+    }
+    for (const auto& o : *ops) {
+        const auto& p = o.params;
+        if (o.id == 4 && p.size() >= 8) {
+            bp.constant = be32(&p[0]);
+        } else if (o.id == 5 && p.size() >= 12) {
+            const uint32_t nPts = be32(&p[4]), nRects = be32(&p[8]);
+            size_t at = 12;
+            for (uint32_t i = 0; i < nPts && at + 8 <= p.size(); ++i, at += 8) bp.points.push_back({be32(&p[at]), be32(&p[at + 4])});
+            for (uint32_t i = 0; i < nRects && at + 16 <= p.size(); ++i, at += 16)
+                bp.rects.push_back({be32(&p[at]), be32(&p[at + 4]), be32(&p[at + 8]), be32(&p[at + 12])});
+        } else if (!o.optional()) {
+            warnings.push_back(std::string("OpcodeList1 opcode ") + opcodeName(o.id) + " was not applied");
+        }
+    }
+    return bp;
+}
+
+void fixBadPixels(const BadPixels& bp, const PixelRect& crop, uint32_t width, uint32_t height, std::vector<uint16_t>& data) {
+    if (bp.empty()) return;
+    std::vector<uint8_t> bad(data.size(), 0);
+    auto mark = [&](int64_t row, int64_t col) {
+        const int64_t y = row - crop.top, x = col - crop.left;
+        if (y >= 0 && x >= 0 && y < height && x < width) bad[static_cast<size_t>(y) * width + static_cast<size_t>(x)] = 1;
+    };
+    if (bp.constant)
+        for (size_t i = 0; i < data.size(); ++i)
+            if (data[i] == *bp.constant) bad[i] = 1;
+    for (const auto& p : bp.points) mark(p[0], p[1]);
+    for (const auto& r : bp.rects)
+        for (uint32_t row = r[0]; row < r[2]; ++row)
+            for (uint32_t col = r[1]; col < r[3]; ++col) mark(row, col);
+    const std::vector<uint16_t> src = data;
+    for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t x = 0; x < width; ++x) {
+            const size_t i = static_cast<size_t>(y) * width + x;
+            if (!bad[i]) continue;
+            uint64_t sum = 0;
+            uint32_t n = 0;
+            for (int dist = 2; dist <= 8 && n == 0; dist += 2) {
+                const int nb[4][2] = {{-dist, 0}, {dist, 0}, {0, -dist}, {0, dist}};
+                for (const auto& d : nb) {
+                    const int64_t yy = int64_t(y) + d[0], xx = int64_t(x) + d[1];
+                    if (yy < 0 || xx < 0 || yy >= height || xx >= width) continue;
+                    const size_t j = static_cast<size_t>(yy) * width + static_cast<size_t>(xx);
+                    if (bad[j]) continue;
+                    sum += src[j];
+                    ++n;
+                }
+            }
+            if (n) data[i] = static_cast<uint16_t>((sum + n / 2) / n);
+        }
+}
+
+std::optional<std::array<double, 2>> pairOf(const tiff::Ifd& ifd, uint16_t tg) {
+    const tiff::Entry* e = ifd.find(tg);
+    if (!e || e->count < 2) return std::nullopt;
+    auto a = e->real(0), b = e->real(1);
+    if (!a) a = e->u32(0) ? std::optional<double>(*e->u32(0)) : std::nullopt;
+    if (!b) b = e->u32(1) ? std::optional<double>(*e->u32(1)) : std::nullopt;
+    if (!a || !b) return std::nullopt;
+    return std::array<double, 2>{*a, *b};
+}
+
+} // namespace
+
 Expected<void> readClipInfoFromIfd(const Reader& r, const Ifd& ifd, ClipInfo& ci, Rational* fpsOut) {
     R3DSS_TRY_ASSIGN(layout, layoutOf(ifd));
     const PixelRect& declared = layout.region.declared;
@@ -518,29 +843,32 @@ Expected<void> readClipInfoFromIfd(const Reader& r, const Ifd& ifd, ClipInfo& ci
     if (lv.fold)
         R3DSS_LOG_INFO("cdng", "black level varies inside a CFA site (BlackLevelDeltaH/V or a large BlackLevel repeat); "
                                "the variation is subtracted from the samples and a per-site black is written");
-    ci.meta.cameraMake = ifd.ascii(tag::Make);
-    ci.meta.cameraModel = ifd.ascii(tag::Model);
-    if (ci.meta.cameraModel.empty()) ci.meta.cameraModel = ifd.ascii(tag::UniqueCameraModel);
-    if (const Entry* cm = ifd.find(tag::ColorMatrix1); cm && cm->count == 9) {
+    // Camera and clip tags: IFD0 (where a preview-IFD0 + raw-SubIFD layout keeps them), overridden by
+    // the raw IFD. Geometry, levels and CFA above come from the raw IFD only.
+    const Ifd meta = mergedIfd(r, ifd);
+    ci.meta.cameraMake = meta.ascii(tag::Make);
+    ci.meta.cameraModel = meta.ascii(tag::Model);
+    if (ci.meta.cameraModel.empty()) ci.meta.cameraModel = meta.ascii(tag::UniqueCameraModel);
+    if (const Entry* cm = meta.find(tag::ColorMatrix1); cm && cm->count == 9) {
         ColorInfo c;
         for (uint32_t i = 0; i < 9; ++i) c.colorMatrix1[i] = cm->real(i).value_or(0.0);
-        c.calibrationIlluminant1 = static_cast<uint16_t>(ifd.u32(tag::CalibrationIlluminant1).value_or(21));
-        if (const Entry* cm2 = ifd.find(tag::ColorMatrix2); cm2 && cm2->count == 9) {
+        c.calibrationIlluminant1 = static_cast<uint16_t>(meta.u32(tag::CalibrationIlluminant1).value_or(21));
+        if (const Entry* cm2 = meta.find(tag::ColorMatrix2); cm2 && cm2->count == 9) {
             std::array<double, 9> m{};
             for (uint32_t i = 0; i < 9; ++i) m[i] = cm2->real(i).value_or(0.0);
             c.colorMatrix2 = m;
-            c.calibrationIlluminant2 = static_cast<uint16_t>(ifd.u32(tag::CalibrationIlluminant2).value_or(17));
+            c.calibrationIlluminant2 = static_cast<uint16_t>(meta.u32(tag::CalibrationIlluminant2).value_or(17));
         }
         ci.meta.color = c;
     }
-    if (const Entry* wb = ifd.find(tag::AsShotNeutral); wb && wb->count == 3) {
+    if (const Entry* wb = meta.find(tag::AsShotNeutral); wb && wb->count == 3) {
         WhiteBalance w;
         for (uint32_t i = 0; i < 3; ++i) w.asShotNeutral[i] = wb->real(i).value_or(1.0);
         ci.meta.whiteBalance = w;
     }
-    if (const Entry* pd = ifd.find(tag::DNGPrivateData); pd && pd->count)
+    if (const Entry* pd = meta.find(tag::DNGPrivateData); pd && pd->count)
         ci.meta.opaque.push_back({"DNGPrivateData", pd->data});
-    if (const Entry* fr = ifd.find(tag::FrameRate); fr && fr->count >= 1) {
+    if (const Entry* fr = meta.find(tag::FrameRate); fr && fr->count >= 1) {
         const uint8_t* p = fr->data.data();
         auto rd = [&](const uint8_t* q) {
             return fr->bigEndian ? (uint32_t(q[0]) << 24) | (uint32_t(q[1]) << 16) | (uint32_t(q[2]) << 8) | q[3]
@@ -549,11 +877,11 @@ Expected<void> readClipInfoFromIfd(const Reader& r, const Ifd& ifd, ClipInfo& ci
         const int32_t n = static_cast<int32_t>(rd(p)), d = static_cast<int32_t>(rd(p + 4));
         if (n > 0 && d > 0) *fpsOut = Rational{n, d};
     }
-    if (const Entry* tc = ifd.find(tag::TimeCodes); tc && tc->count >= 8)
+    if (const Entry* tc = meta.find(tag::TimeCodes); tc && tc->count >= 8)
         ci.startTimecode = decodeSmpteTimecode(tc->data.data(), *fpsOut);
-    if (const Entry* rn = ifd.find(tag::ReelName)) ci.meta.vendor["ReelName"] = rn->ascii();
+    if (const Entry* rn = meta.find(tag::ReelName)) ci.meta.vendor["ReelName"] = rn->ascii();
     // EXIF
-    if (auto exifOff = ifd.u32(tag::ExifIFD)) {
+    if (auto exifOff = meta.u32(tag::ExifIFD)) {
         auto exif = r.readIfd(*exifOff);
         if (exif) {
             if (auto iso = exif->u32(tag::ISOSpeedRatings)) ci.meta.iso = *iso;
@@ -566,6 +894,32 @@ Expected<void> readClipInfoFromIfd(const Reader& r, const Ifd& ifd, ClipInfo& ci
             if (haveLens) ci.meta.lens = lens;
         }
     }
+    // TIFF/EP exposure facts in IFD0 when there is no EXIF IFD (or it lacks them).
+    if (!ci.meta.iso) if (auto iso = meta.u32(tag::ISOSpeedRatings)) ci.meta.iso = *iso;
+    if (!ci.meta.exposureTimeSec) if (auto et = meta.real(tag::ExposureTime)) ci.meta.exposureTimeSec = *et;
+    // Everything resolution-independent is carried over verbatim (per frame, see readFrame).
+    ci.meta.dngPassthrough = true;
+    ci.meta.dngTags = collectTags(meta, kDngPassthrough);
+    if (auto exifOff = meta.u32(tag::ExifIFD))
+        if (auto exif = r.readIfd(*exifOff)) ci.meta.exifTags = collectTags(*exif, kExifPassthrough);
+    // Framing relative to the returned crop: DNG states DefaultCrop and opcode areas relative to the
+    // declared ActiveArea, the reader may have moved the origin to an even site.
+    const int dx = static_cast<int>(crop.left) - static_cast<int>(declared.left);
+    const int dy = static_cast<int>(crop.top) - static_cast<int>(declared.top);
+    DngGeometry& geo = ci.meta.dngGeometry;
+    if (auto org = pairOf(meta, tag::DefaultCropOrigin), sz = pairOf(meta, tag::DefaultCropSize); org && sz) {
+        const double ox = std::max(0.0, (*org)[0] - dx), oy = std::max(0.0, (*org)[1] - dy);
+        const double w = std::min((*sz)[0], ci.width - ox), h = std::min((*sz)[1], ci.height - oy);
+        if (w > 0 && h > 0) {
+            geo.cropOrigin = std::array<double, 2>{ox, oy};
+            geo.cropSize = std::array<double, 2>{w, h};
+        }
+    }
+    if (auto sc = pairOf(meta, tag::DefaultScale); sc && (*sc)[0] > 0 && (*sc)[1] > 0) geo.scale = *sc;
+    if (const Entry* l2 = meta.find(tag::OpcodeList2); l2 && !l2->data.empty())
+        geo.opcodeList2 = filterAreaOpcodes(l2->data, dx, dy, "OpcodeList2", ci.warnings);
+    if (const Entry* l3 = meta.find(tag::OpcodeList3); l3 && !l3->data.empty())
+        geo.opcodeList3 = filterAreaOpcodes(l3->data, dx, dy, "OpcodeList3", ci.warnings);
     return {};
 }
 
@@ -589,25 +943,41 @@ public:
         info_.fps = fps;
         if (info_.startTimecode) info_.startTimecode->fps = fps;
         for (const auto& f : frames_) info_.sourceBytes += fs::file_size(f, ec);
-        // Audio sidecar: <dirname>.wav, else the first .wav in the directory.
-        fs::path wav = dir_ / dir_.filename();
-        wav += ".wav";
-        if (!fs::exists(wav, ec)) {
-            wav.clear();
-            for (const auto& e : fs::directory_iterator(dir_, ec))
-                if (e.is_regular_file(ec) && lowerExt(e.path()) == ".wav") { wav = e.path(); break; }
+        // Bad-pixel opcodes (OpcodeList1) are applied to every frame before resampling.
+        {
+            const Ifd meta = mergedIfd(r, ifd);
+            if (const Entry* l1 = meta.find(tag::OpcodeList1); l1 && !l1->data.empty())
+                badPixels_ = parseBadPixels(l1->data, info_.warnings);
         }
-        if (!wav.empty()) {
-            auto wi = wav::probe(wav);
-            if (wi) {
+        // Audio sidecars: every .wav in the clip folder except dotfiles (macOS AppleDouble '._*'
+        // stubs), in natural name order. The main one is <dirname>.wav when present, else the first
+        // that parses. All of them are listed so a CinemaDNG writer can copy them unchanged.
+        std::vector<fs::path> wavs;
+        for (const auto& e : fs::directory_iterator(dir_, ec)) {
+            const std::string n = toUtf8(e.path().filename());
+            if (!n.empty() && n[0] != '.' && e.is_regular_file(ec) && lowerExt(e.path()) == ".wav") wavs.push_back(e.path());
+        }
+        std::sort(wavs.begin(), wavs.end(), [](const fs::path& x, const fs::path& y) {
+            return naturalLess(toUtf8(x.filename()), toUtf8(y.filename()));
+        });
+        const std::string preferred = toUtf8(dir_.filename()) + ".wav";
+        std::stable_partition(wavs.begin(), wavs.end(), [&](const fs::path& w) { return toUtf8(w.filename()) == preferred; });
+        std::optional<size_t> mainIdx;
+        for (size_t i = 0; i < wavs.size(); ++i) {
+            info_.sourceBytes += fs::file_size(wavs[i], ec);
+            auto wi = wav::probe(wavs[i]);
+            if (wi && !mainIdx) {
+                mainIdx = i;
                 wav_ = *wi;
-                wavPath_ = wav;
+                wavPath_ = wavs[i];
                 info_.audio = wi->audio;
-                info_.sourceBytes += fs::file_size(wav, ec);
-            } else {
-                R3DSS_LOG_WARN("cdng", "ignoring unreadable audio sidecar " + toUtf8(wav) + ": " + wi.error().toString());
+            } else if (!wi) {
+                info_.warnings.push_back("audio sidecar " + toUtf8(wavs[i].filename()) + " cannot be decoded (" +
+                                         wi.error().message + "); it is copied unchanged, not verified");
             }
         }
+        if (mainIdx) std::rotate(wavs.begin(), wavs.begin() + static_cast<long>(*mainIdx), wavs.begin() + static_cast<long>(*mainIdx) + 1);
+        info_.audioSidecars = wavs;
         return info_;
     }
     const ClipInfo& info() const override { return info_; }
@@ -632,8 +1002,18 @@ public:
         out.index = index;
         out.meta = FrameMetadata{};
         R3DSS_TRY(decodeFrameData(r, fl.g, c, out.data));
+        fixBadPixels(badPixels_, c, out.width, out.height, out.data);
         applyLevels(fl.levels, out.width, out.height, out.data);
-        if (const Entry* tc = ifd.find(tag::TimeCodes); tc && tc->count >= 8)
+        // This frame's own tags (white balance, exposure and timecode may change during a take).
+        const Ifd meta = mergedIfd(r, ifd);
+        out.meta.dngTags = collectTags(meta, kDngPassthrough);
+        if (auto exifOff = meta.u32(tag::ExifIFD))
+            if (auto exif = r.readIfd(*exifOff)) {
+                out.meta.exifTags = collectTags(*exif, kExifPassthrough);
+                if (auto iso = exif->u32(tag::ISOSpeedRatings)) out.meta.iso = *iso;
+                if (auto et = exif->real(tag::ExposureTime)) out.meta.exposureTimeSec = *et;
+            }
+        if (const Entry* tc = meta.find(tag::TimeCodes); tc && tc->count >= 8)
             out.meta.timecode = decodeSmpteTimecode(tc->data.data(), info_.fps);
         else if (info_.startTimecode)
             out.meta.timecode = info_.startTimecode->plusFrames(index);
@@ -660,6 +1040,7 @@ private:
     std::vector<fs::path> frames_;
     ClipInfo info_;
     wav::WavInfo wav_;
+    BadPixels badPixels_;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -735,7 +1116,9 @@ public:
                 R3DSS_LOG_INFO("cdng", "LinearizationTable is not monotonic; writing linear values without a table");
             }
         }
-        if (cfg.audio.present()) {
+        if (!cfg.copyAudioFiles.empty()) {
+            // Audio files are copied byte for byte in finish(); a streamed track is not written.
+        } else if (cfg.audio.present()) {
             wavPath_ = cfg.dest / fromUtf8(clipName_ + ".wav");
             R3DSS_TRY(wav_.begin(wavPath_, cfg.audio));
             summary_.files.push_back(wavPath_);
@@ -835,8 +1218,10 @@ public:
         raw.setU16(tag::SamplesPerPixel, {1});
         raw.setU16(tag::PlanarConfiguration, {1});
         const auto& m = cfg_.meta;
-        raw.setAscii(tag::Make, m.cameraMake.empty() ? "Unknown" : m.cameraMake);
-        raw.setAscii(tag::Model, m.cameraModel.empty() ? "Unknown" : m.cameraModel);
+        // A CinemaDNG source's own tags are copied below; nothing it did not have is invented.
+        const bool pass = m.dngPassthrough;
+        if (!m.cameraMake.empty() || !pass) raw.setAscii(tag::Make, m.cameraMake.empty() ? "Unknown" : m.cameraMake);
+        if (!m.cameraModel.empty() || !pass) raw.setAscii(tag::Model, m.cameraModel.empty() ? "Unknown" : m.cameraModel);
         raw.setAscii(tag::Software, opts_.software);
         raw.setU16(tag::CFARepeatPatternDim, {2, 2});
         {
@@ -873,16 +1258,21 @@ public:
         }
         for (const auto& ob : m.opaque)
             if (ob.tag == "DNGPrivateData" && !ob.bytes.empty()) raw.setU8(tag::DNGPrivateData, ob.bytes);
-        const Timecode tc = f.meta.timecode ? *f.meta.timecode
-                                            : (cfg_.startTimecode ? cfg_.startTimecode->plusFrames(frameNo_)
-                                                                  : Timecode::fromFrames(frameNo_, cfg_.fps, false));
-        {
+        if (!pass) {
+            // Other sources: timecode and frame rate from the clip (synthesised when it has none).
+            Timecode tc = f.meta.timecode ? *f.meta.timecode
+                                          : (cfg_.startTimecode ? cfg_.startTimecode->plusFrames(frameNo_)
+                                                                : Timecode::fromFrames(frameNo_, cfg_.fps, false));
+            tc.fps = cfg_.fps;
             const auto b = encodeSmpteTimecode(tc);
             raw.setU8(tag::TimeCodes, std::vector<uint8_t>(b.begin(), b.end()));
+            raw.setSRational(tag::FrameRate, {{static_cast<int32_t>(cfg_.fps.num), static_cast<int32_t>(cfg_.fps.den)}});
         }
-        raw.setSRational(tag::FrameRate, {{static_cast<int32_t>(cfg_.fps.num), static_cast<int32_t>(cfg_.fps.den)}});
         if (auto it = m.vendor.find("ReelName"); it != m.vendor.end())
             if (auto s = std::get_if<std::string>(&it->second)) raw.setAscii(tag::ReelName, *s);
+        // The source frame's tags, verbatim (they replace the structured values above).
+        for (const auto& t : f.meta.dngTags.empty() ? m.dngTags : f.meta.dngTags) raw.setRaw(toEntry(t));
+        writeGeometry(f, raw);
         // EXIF IFD
         exif.setU8(tag::ExifVersion, {'0', '2', '3', '0'}, Type::Undefined);
         const auto iso = f.meta.iso ? f.meta.iso : m.iso;
@@ -894,6 +1284,7 @@ public:
             if (m.lens->focalLengthMm) exif.setRational(tag::FocalLength, {toRational(*m.lens->focalLengthMm, 100)});
             if (m.lens->apertureF) exif.setRational(tag::FNumber, {toRational(*m.lens->apertureF, 100)});
         }
+        for (const auto& t : f.meta.exifTags.empty() ? m.exifTags : f.meta.exifTags) exif.setRaw(toEntry(t));
         const uint64_t exifOff = w.writeIfd(exif);
         raw.setU32(tag::ExifIFD, {static_cast<uint32_t>(exifOff)});
         const uint64_t ifd0 = w.writeIfd(raw);
@@ -917,6 +1308,17 @@ public:
     }
 
     Expected<WriteSummary> finish() override {
+        // Sidecars copied unchanged: the main one takes the clip's name, extra ones keep theirs after it.
+        for (size_t i = 0; i < cfg_.copyAudioFiles.size(); ++i) {
+            const fs::path& src = cfg_.copyAudioFiles[i];
+            const fs::path dst = cfg_.dest / fromUtf8(i == 0 ? clipName_ + ".wav" : clipName_ + "_" + toUtf8(src.filename()));
+            std::error_code ec;
+            fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+            if (ec) return makeError(ErrorCode::Io, "cannot copy audio " + toUtf8(src) + ": " + ec.message());
+            summary_.files.push_back(dst);
+            summary_.totalBytes += fs::file_size(dst, ec);
+            if (i == 0) summary_.audioSamplesWritten = cfg_.audio.sampleCount;
+        }
         if (!wavPath_.empty()) {
             R3DSS_TRY(wav_.finish());
             std::error_code ec;
@@ -932,6 +1334,28 @@ public:
     }
 
 private:
+    // Framing that depends on the resolution, scaled from the source frames to this output.
+    void writeGeometry(const BayerFrame& f, Writer::IfdBuilder& raw) const {
+        const DngGeometry& g = cfg_.meta.dngGeometry;
+        if (!cfg_.sourceWidth || !cfg_.sourceHeight) return;
+        const double sx = static_cast<double>(f.width) / cfg_.sourceWidth, sy = static_cast<double>(f.height) / cfg_.sourceHeight;
+        if (g.cropOrigin && g.cropSize) {
+            const double ox = (*g.cropOrigin)[0] * sx, oy = (*g.cropOrigin)[1] * sy;
+            const double w = std::min((*g.cropSize)[0] * sx, f.width - ox), h = std::min((*g.cropSize)[1] * sy, f.height - oy);
+            raw.setRational(tag::DefaultCropOrigin, {toRational(ox, 1000), toRational(oy, 1000)});
+            raw.setRational(tag::DefaultCropSize, {toRational(w, 1000), toRational(h, 1000)});
+        }
+        // Keep the displayed aspect: a custom size with another aspect is signalled as non-square pixels.
+        const std::array<double, 2> s = g.scale.value_or(std::array<double, 2>{1.0, 1.0});
+        const double h = s[0] * (static_cast<double>(cfg_.sourceWidth) * f.height) / (static_cast<double>(cfg_.sourceHeight) * f.width);
+        if (g.scale || std::fabs(h / s[1] - 1.0) > 1e-4)
+            raw.setRational(tag::DefaultScale, {toRational(h, 100000), toRational(s[1], 100000)});
+        if (!g.opcodeList2.empty())
+            if (auto b = rescaleAreaOpcodes(g.opcodeList2, sx, sy, f.width, f.height); !b.empty()) raw.setU8(tag::OpcodeList2, b, Type::Undefined);
+        if (!g.opcodeList3.empty())
+            if (auto b = rescaleAreaOpcodes(g.opcodeList3, sx, sy, f.width, f.height); !b.empty()) raw.setU8(tag::OpcodeList3, b, Type::Undefined);
+    }
+
     CdngWriterOptions opts_;
     WriterConfig cfg_;
     std::string clipName_;

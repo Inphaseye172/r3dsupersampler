@@ -114,7 +114,8 @@ inline constexpr uint16_t NewSubFileType = 254, ImageWidth = 256, ImageLength = 
                           WhiteLevel = 50717, DefaultCropOrigin = 50719, DefaultCropSize = 50720, ColorMatrix1 = 50721, ColorMatrix2 = 50722, AsShotNeutral = 50728,
                           BaselineExposure = 50730, DNGPrivateData = 50740, ActiveArea = 50829, CalibrationIlluminant1 = 50778, CalibrationIlluminant2 = 50779,
                           OriginalRawFileName = 50827, TimeCodes = 51043, FrameRate = 51044, TStop = 51058,
-                          ReelName = 51081, CameraLabel = 51105;
+                          ReelName = 51081, CameraLabel = 51105, DefaultScale = 50718, OpcodeList1 = 51008,
+                          OpcodeList2 = 51009, OpcodeList3 = 51022;
 }
 
 } // namespace r3dss::codec::tiff

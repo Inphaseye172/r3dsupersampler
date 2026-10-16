@@ -133,17 +133,21 @@ Expected<void> StreamWriter::write(const AudioBlock& b) {
 Expected<void> StreamWriter::finish() {
     if (!f_) return {};
     const uint64_t dataBytes = static_cast<uint64_t>(samples_) * info_.frameBytes();
-    if (dataBytes & 1u) std::fputc(0, f_);
+    bool ok = true;
+    if (dataBytes & 1u) ok &= std::fputc(0, f_) != EOF;
     const long end = std::ftell(f_);
+    ok &= end >= 0;
     auto patch = [&](long pos, uint32_t v) {
-        std::fseek(f_, pos, SEEK_SET);
-        uint8_t b[4] = {uint8_t(v), uint8_t(v >> 8), uint8_t(v >> 16), uint8_t(v >> 24)};
-        std::fwrite(b, 1, 4, f_);
+        const uint8_t b[4] = {uint8_t(v), uint8_t(v >> 8), uint8_t(v >> 16), uint8_t(v >> 24)};
+        ok &= std::fseek(f_, pos, SEEK_SET) == 0 && std::fwrite(b, 1, 4, f_) == 4;
     };
     patch(dataSizePos_, static_cast<uint32_t>(dataBytes));
     patch(riffSizePos_, static_cast<uint32_t>(end - 8));
-    std::fclose(f_);
+    ok &= std::fflush(f_) == 0;
+    ok &= std::fclose(f_) == 0;
     f_ = nullptr;
+    // A failed flush or close loses the buffered tail and the size fields: the file is unusable.
+    if (!ok) return makeError(ErrorCode::Io, "audio file could not be completed (disk full?): " + toUtf8(path_));
     return {};
 }
 
