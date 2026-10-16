@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       cuda:
-        description: "Also build the CUDA resampler on Windows (slow toolkit install)"
+        description: "Also build the CUDA resampler on Windows (slow toolkit install). Never published: no GPU runner tests it."
         type: boolean
         default: false
       prerelease_tag:
@@ -23,6 +23,9 @@ env:
   # SDK tests skip.
   R3DSDK_ZIP_URL: ${{ secrets.R3DSDK_ZIP_URL }}
   R3DSDK_TOKEN: ${{ secrets.R3DSDK_TOKEN }}
+  # The independent pixel + tag gate (scripts/verify_cdng.py) and the third-party DNG writer used by
+  # the acceptance matrix. Pinned so a tool update cannot change what "passed" means.
+  GATE_TOOLS: rawpy==0.27.1 numpy==2.5.4 tifffile==2026.9.20 pidng==4.0.9
 
 jobs:
   linux:
@@ -30,10 +33,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build catch2 nlohmann-json3-dev libcli11-dev qt6-base-dev libgl1-mesa-dev
+          python -m pip install --quiet $GATE_TOOLS
       - name: Fetch RED R3D SDK (private, optional)
         if: env.R3DSDK_ZIP_URL != ''
         # Never fails the job: a missing or unreachable SDK means "build without it" (docs/IMPLEMENTATION_PLAN.md).
@@ -62,7 +69,7 @@ jobs:
           key: samples-v1
       - name: Fetch sample clips
         run: |
-          python3 scripts/fetch_samples.py
+          python scripts/fetch_samples.py
           echo "R3DSS_SAMPLES=$PWD/.deps/samples" >> "$GITHUB_ENV"
       - name: Configure
         run: cmake --preset linux-ci
@@ -72,14 +79,22 @@ jobs:
         run: ctest --preset linux-ci
       - name: CLI end-to-end
         run: |
-          ./build/linux-ci/src/cli/r3dss-cli codecs
-          ./build/linux-ci/src/cli/r3dss-cli synth /tmp/synth --width 1920 --height 1080 --frames 8
-          ./build/linux-ci/src/cli/r3dss-cli convert /tmp/synth -o /tmp/out --size 960x540 --profile Q5
-          ./build/linux-ci/src/cli/r3dss-cli probe /tmp/out/synth_custom_Q5
+          set -euo pipefail
+          cli=./build/linux-ci/src/cli/r3dss-cli
+          $cli codecs
+          $cli synth /tmp/synth --width 1920 --height 1080 --frames 8 --audio-channels 2
+          $cli convert /tmp/synth -o /tmp/out --size 960x540
+          $cli probe /tmp/out/synth_960x540_lossless > /tmp/probe.json
+          python - <<'PY'
+          import json
+          j = json.load(open("/tmp/probe.json"))
+          assert (j["format"], j["width"], j["height"], j["frames"]) == ("CinemaDNG", 960, 540, 8), j
+          print("e2e ok:", j["width"], "x", j["height"], j["frames"], "frames")
+          PY
       - name: Probe sample clip (container, no SDK needed)
         run: |
           ./build/linux-ci/src/cli/r3dss-cli probe --chunks "$R3DSS_SAMPLES/A060_A027_0912VZ_001.R3D" > probe-komodo.json
-          python3 - <<'PY'
+          python - <<'PY'
           import json
           j = json.load(open("probe-komodo.json"))
           assert j["source"] == "REDCODE RAW (KOMODO 6K)", j["source"]
@@ -89,23 +104,25 @@ jobs:
           PY
       - name: GUI smoke (offscreen)
         run: QT_QPA_PLATFORM=offscreen ./build/linux-ci/src/gui/r3dss-gui --smoke
-      - name: Acceptance (dev mode; 6K24 -> 2K24 CinemaDNG RAW-to-RAW, sample probe)
-        run: python3 scripts/acceptance.py --bin build/linux-ci/src/cli --mode dev --report acceptance-linux.json
+      - name: Acceptance from the installed tree (RAW-to-RAW matrix, independent LibRaw gate)
+        run: |
+          cmake --install build/linux-ci --prefix dist-linux
+          python scripts/acceptance.py --bin dist-linux/bin --mode dev --require-independent --report acceptance-linux.json
       - name: Benchmark (small)
         run: ./build/linux-ci/bench/r3dss-bench --width 3840 --height 2160 --frames 4 --size FHD --json bench-linux.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: bench-linux
           path: |
             bench-linux.json
             probe-komodo.json
             acceptance-linux.json
+          if-no-files-found: ignore
 
   windows:
     name: Windows x64 (MSVC, vcpkg, Qt, installer)
     runs-on: windows-latest
-    permissions:
-      contents: write # publish GitHub releases (v* / dev-* tags, or a manual dev-* pre-release)
     env:
       VCPKG_ROOT: ${{ github.workspace }}\.deps\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.deps\vcpkg-cache
@@ -114,11 +131,11 @@ jobs:
       # terms acknowledgement (repository variable R3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED=ON) are present.
       R3DSS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') && 'ON' || 'OFF' }}
       R3DSS_TERMS_ACK: ${{ vars.R3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED || 'OFF' }}
-      # Tag to publish a GitHub release under: the pushed v* / dev-* tag, or a dev-* tag given to a
-      # manual run (the release then creates that tag at this run's commit). Empty = no release.
-      R3DSS_PUBLISH_TAG: ${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/dev-')) && github.ref_name || (startsWith(inputs.prerelease_tag, 'dev-') && inputs.prerelease_tag || '') }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Fetch RED R3D SDK (private, optional)
         if: env.R3DSDK_ZIP_URL != ''
         shell: pwsh
@@ -146,11 +163,14 @@ jobs:
         with:
           path: .deps\samples
           key: samples-v1
-      - name: Fetch sample clips
+      - name: Fetch sample clips and gate tools
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"; $PSNativeCommandUseErrorActionPreference = $true
           python scripts/fetch_samples.py
           "R3DSS_SAMPLES=$env:GITHUB_WORKSPACE\.deps\samples" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $tools = $env:GATE_TOOLS -split " "
+          python -m pip install --quiet @tools
       - name: Cache vcpkg binaries
         uses: actions/cache@v4
         with:
@@ -159,6 +179,7 @@ jobs:
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"; $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force .deps\vcpkg-cache | Out-Null
           git clone https://github.com/microsoft/vcpkg .deps\vcpkg
           git -C .deps\vcpkg checkout 2026.07.29
@@ -170,6 +191,7 @@ jobs:
           version: "6.8.*"
           arch: win64_msvc2022_64
           cache: true
+          setup-python: false
       - name: CUDA toolkit (optional)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.cuda }}
         uses: Jimver/cuda-toolkit@v0.2.19
@@ -183,10 +205,10 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"; $PSNativeCommandUseErrorActionPreference = $true
           $env:QT_ROOT = $env:QT_ROOT_DIR
           $env:VCPKG_ROOT = "$env:GITHUB_WORKSPACE\.deps\vcpkg"
           cmake --preset windows-release -DR3DSS_RELEASE="$env:R3DSS_RELEASE" -DR3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED="$env:R3DSS_TERMS_ACK"
-          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
       - name: Build
         shell: pwsh
         run: cmake --build --preset windows-release
@@ -196,27 +218,68 @@ jobs:
       - name: CLI end-to-end
         shell: pwsh
         run: |
-          .\build\windows-release\src\cli\r3dss-cli.exe synth $env:TEMP\synth --width 1920 --height 1080 --frames 8
-          .\build\windows-release\src\cli\r3dss-cli.exe convert $env:TEMP\synth -o $env:TEMP\out --size 960x540
+          $ErrorActionPreference = "Stop"; $PSNativeCommandUseErrorActionPreference = $true
+          $cli = ".\build\windows-release\src\cli\r3dss-cli.exe"
+          & $cli synth $env:TEMP\synth --width 1920 --height 1080 --frames 8 --audio-channels 2
+          & $cli convert $env:TEMP\synth -o $env:TEMP\out --size 960x540
+          $j = & $cli probe $env:TEMP\out\synth_960x540_lossless | ConvertFrom-Json
+          if ($j.format -ne "CinemaDNG" -or $j.width -ne 960 -or $j.height -ne 540 -or $j.frames -ne 8) { throw "unexpected output: $($j | ConvertTo-Json -Compress)" }
       - name: Install + package
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"; $PSNativeCommandUseErrorActionPreference = $true
           cmake --install build\windows-release --prefix dist
-          if (-not (Test-Path dist\bin\r3dss-gui.exe)) { throw "GUI was not built" }
+          # Everything the package needs at runtime, including the app-local MSVC runtime.
+          $required = @("bin\r3dss-cli.exe", "bin\r3dss-gui.exe", "bin\Qt6Core.dll", "bin\Qt6Gui.dll", "bin\Qt6Widgets.dll",
+                        "bin\platforms\qwindows.dll", "bin\vcruntime140.dll", "bin\vcruntime140_1.dll", "bin\msvcp140.dll",
+                        "licenses\LGPL-3.0-only.txt", "licenses\GPL-3.0-only.txt", "licenses\nlohmann-json.txt", "licenses\cli11.txt",
+                        "LICENSE", "NOTICE")
+          $missing = $required | Where-Object { -not (Test-Path (Join-Path dist $_)) }
+          if ($missing) { throw "package is missing: $($missing -join ', ')" }
+          if (Test-Path dist\bin\vc_redist.x64.exe) { throw "vc_redist.x64.exe must not be shipped (the runtime is app-local)" }
           Compress-Archive -Path dist\* -DestinationPath r3dss-win64.zip -Force
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DSourceDir="$PWD\dist" /DAppVersion="0.2.0" installer\r3dss.iss
-          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DSourceDir="$PWD\dist" /DAppVersion="0.3.0" installer\r3dss.iss
+      - name: Every import of the package resolves inside it or to Windows itself
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Runtime DLLs that a clean Windows does not have, although this runner does in System32.
+          $notOs = '^(vcruntime|msvcp|concrt|vccorlib|vcomp|qt6|cudart)'
+          $local = @{}
+          Get-ChildItem dist\bin -Recurse -Include *.dll, *.exe | ForEach-Object { $local[$_.Name.ToLower()] = $true }
+          $problems = @()
+          foreach ($f in Get-ChildItem dist\bin -Recurse -Include *.dll, *.exe) {
+            $deps = (dumpbin /nologo /dependents $f.FullName) | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLower() }
+            foreach ($d in $deps) {
+              if ($local.ContainsKey($d)) { continue }
+              if ($d -match '^(api|ext)-ms-win-') { continue }
+              if (($d -notmatch $notOs) -and (Test-Path (Join-Path $env:WINDIR "System32\$d"))) { continue }
+              $problems += "$($f.Name) imports $d, which is not in the package"
+            }
+          }
+          if ($problems) { $problems | ForEach-Object { Write-Host $_ }; throw "$($problems.Count) unresolved imports" }
+          Write-Host "all imports resolve"
       - name: Installed acceptance (silent install, then run from the installed location)
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"; $PSNativeCommandUseErrorActionPreference = $true
           $setup = Get-ChildItem installer\Output\*.exe | Select-Object -First 1
           $dir = "C:\r3dss-accept"
           $p = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$dir" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installer exited $($p.ExitCode)" }
           if (-not (Test-Path "$dir\bin\r3dss-cli.exe")) { throw "installed r3dss-cli.exe missing" }
           $mode = if ($env:R3DSS_RELEASE -eq "ON") { "release" } else { "dev" }
-          python scripts/acceptance.py --bin "$dir\bin" --mode $mode --report acceptance-windows.json
-          if ($LASTEXITCODE -ne 0) { throw "installed acceptance failed ($mode)" }
+          python scripts/acceptance.py --bin "$dir\bin" --mode $mode --require-independent --report acceptance-windows.json
+          # The installed GUI: the headless batch runner (same engine path as the window), then a window smoke.
+          $work = "$env:TEMP\gui-job"
+          & "$dir\bin\r3dss-cli.exe" synth "$work\in\G001" --width 1920 --height 1080 --frames 4 --audio-channels 2
+          & "$dir\bin\r3dss-cli.exe" scan "$work\in" -o "$work\out" --size 960x540 --write-job "$work\job.json"
+          $g = Start-Process -FilePath "$dir\bin\r3dss-gui.exe" -ArgumentList "--run-job", "`"$work\job.json`"" -Wait -PassThru -RedirectStandardOutput "$work\gui.txt"
+          Get-Content "$work\gui.txt"
+          if ($g.ExitCode -ne 0) { throw "r3dss-gui --run-job exited $($g.ExitCode)" }
+          if (-not (Test-Path "$work\out\G001_960x540_lossless\G001_960x540_lossless_000003.dng")) { throw "--run-job wrote no output" }
+          $s = Start-Process -FilePath "$dir\bin\r3dss-gui.exe" -ArgumentList "--smoke" -Wait -PassThru
+          if ($s.ExitCode -ne 0) { throw "installed r3dss-gui --smoke exited $($s.ExitCode)" }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -231,23 +294,39 @@ jobs:
         with:
           name: r3dss-win64-installer
           path: installer\Output\*.exe
+
+  # Publishing waits for BOTH platforms. CUDA builds are never published: no GPU runner tests them.
+  release:
+    name: Publish GitHub release
+    needs: [linux, windows]
+    if: ${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/dev-') || startsWith(inputs.prerelease_tag, 'dev-')) && !inputs.cuda }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      # The pushed v* / dev-* tag, or a dev-* tag given to a manual run (the release creates that tag at
+      # this run's commit).
+      R3DSS_PUBLISH_TAG: ${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/dev-')) && github.ref_name || inputs.prerelease_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: rel
+          pattern: "{r3dss-win64-portable,r3dss-win64-installer,acceptance-windows,bench-linux}"
+          merge-multiple: true
       - name: Release notes and checksums
-        if: env.R3DSS_PUBLISH_TAG != ''
-        shell: pwsh
         run: |
-          $files = @(Get-Item r3dss-win64.zip) + @(Get-ChildItem installer\Output\*.exe)
-          $sums = foreach ($f in $files) { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $f.FullName).Hash.ToLower(), $f.Name }
-          $sums | Set-Content -Encoding ascii SHA256SUMS.txt
-          if ($env:R3DSS_PUBLISH_TAG -like "dev-*") {
-            $notes = (Get-Content -Raw release\DEV_RELEASE_NOTES.md).Replace("{{COMMIT}}", $env:GITHUB_SHA).Replace("{{TAG}}", $env:R3DSS_PUBLISH_TAG)
-          } else {
-            $notes = "Release $env:R3DSS_PUBLISH_TAG from commit $env:GITHUB_SHA, built with the production release gate (release/capabilities.json).`n"
-          }
-          $fence = [string]::new([char]96, 3)
-          $notes += "`n## SHA-256`n`n$fence" + "text`n" + ($sums -join "`n") + "`n$fence`n"
-          Set-Content -Encoding utf8 release-notes.md $notes
-      - name: Publish GitHub release
-        if: env.R3DSS_PUBLISH_TAG != ''
+          set -euo pipefail
+          cd rel
+          sha256sum r3dss-win64.zip r3dss-*-setup.exe > SHA256SUMS.txt
+          cd ..
+          if [[ "$R3DSS_PUBLISH_TAG" == dev-* ]]; then
+            sed -e "s/{{COMMIT}}/$GITHUB_SHA/g" -e "s/{{TAG}}/$R3DSS_PUBLISH_TAG/g" release/DEV_RELEASE_NOTES.md > release-notes.md
+          else
+            echo "Release $R3DSS_PUBLISH_TAG from commit $GITHUB_SHA, built with the production release gate (release/capabilities.json)." > release-notes.md
+          fi
+          { echo; echo "## SHA-256"; echo; echo '```text'; cat rel/SHA256SUMS.txt; echo '```'; } >> release-notes.md
+      - name: Publish
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.R3DSS_PUBLISH_TAG }}
@@ -258,7 +337,8 @@ jobs:
           make_latest: ${{ startsWith(env.R3DSS_PUBLISH_TAG, 'dev-') && 'false' || 'true' }}
           fail_on_unmatched_files: true
           files: |
-            r3dss-win64.zip
-            installer/Output/*.exe
-            SHA256SUMS.txt
-            acceptance-windows.json
+            rel/r3dss-win64.zip
+            rel/r3dss-*-setup.exe
+            rel/SHA256SUMS.txt
+            rel/acceptance-windows.json
+            rel/acceptance-linux.json

@@ -11,7 +11,7 @@ release/capabilities.json and reports every advertised capability as passed, fai
 
 Standard library only. Exit code 0 = accepted, 1 = rejected, 2 = usage error.
 """
-import argparse, hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile, wave
+import argparse, hashlib, importlib.util, json, os, pathlib, shutil, subprocess, sys, tempfile, wave
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -27,6 +27,7 @@ def sha256(path):
 class Report:
     def __init__(self, mode):
         self.mode, self.items = mode, []
+        self.require_tools = False
 
     def add(self, check, status, detail):
         self.items.append({"check": check, "status": status, "detail": detail})
@@ -34,6 +35,10 @@ class Report:
 
     def skip_or_fail(self, check, detail):
         self.add(check, "skipped" if self.mode == "dev" else "failed", detail)
+
+    def tool_missing(self, check, detail):
+        # The independent gate's Python tools: optional on a developer machine, required in CI / release.
+        self.add(check, "failed" if self.require_tools or self.mode != "dev" else "skipped", detail)
 
     @property
     def ok(self):
@@ -108,22 +113,107 @@ def check_samples(rep, caps, cli, samples_dir):
         rep.add(name, "failed" if problems else "passed", "; ".join(problems) or f"{j['source']}, {len(j['chunks'])} chunks, hash verified")
 
 
+def independent_gate_available():
+    return all(importlib.util.find_spec(m) is not None for m in ("rawpy", "numpy", "tifffile"))
+
+
+def run_gate(rep, name, src, dst, kernel="lanczos3", gate=True):
+    """Independent pixel + tag check (scripts/verify_cdng.py, LibRaw + tifffile)."""
+    if not gate:
+        rep.tool_missing(name + " / independent gate", "rawpy, numpy or tifffile not installed (pip install rawpy numpy tifffile)")
+        return
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "verify_cdng.py"), str(src), str(dst), "--kernel", kernel],
+                       capture_output=True, text=True, timeout=3600)
+    last = (r.stdout.strip().splitlines() or ["(no output)"])[-1]
+    problems = [ln[len("PROBLEM: "):] for ln in r.stdout.splitlines() if ln.startswith("PROBLEM: ")]
+    if r.returncode == 0:
+        rep.add(name + " / independent gate", "passed", last)
+    else:
+        rep.add(name + " / independent gate", "failed", "; ".join(problems[:4]) or (r.stdout + r.stderr)[-600:])
+
+
+def single_output(out):
+    produced = sorted(out.iterdir()) if out.exists() else []
+    partial = [p.name for p in produced if p.name.endswith(".partial")]
+    dirs = [p for p in produced if p.is_dir() and not p.name.endswith(".partial")]
+    return dirs, partial
+
+
+# Small cases that each exercise one dimension; every output goes through the independent gate.
+MATRIX = [
+    # name, synth args, convert args, kernel
+    ("CFA GRBG, 2x", ["--cfa", "GRBG"], ["--size", "960x540"], "lanczos3"),
+    ("CFA GBRG, 2x", ["--cfa", "GBRG"], ["--size", "960x540"], "lanczos3"),
+    ("CFA BGGR, 2x", ["--cfa", "BGGR"], ["--size", "960x540"], "lanczos3"),
+    ("23.976 drop-frame timecode", ["--fps", "24000/1001", "--timecode", "01:00:59;20"], ["--size", "960x540"], "lanczos3"),
+    ("23.976 non-drop timecode", ["--fps", "24000/1001", "--timecode", "10:00:00:12"], ["--size", "960x540"], "lanczos3"),
+    ("25p", ["--fps", "25", "--timecode", "07:12:30:24"], ["--size", "960x540"], "lanczos3"),
+    ("50p (frame-pair timecode)", ["--fps", "50", "--timecode", "07:12:30:24"], ["--size", "960x540"], "lanczos3"),
+    ("uncompressed source", ["--uncompressed"], ["--size", "960x540"], "lanczos3"),
+    ("area kernel", [], ["--size", "960x540", "--kernel", "area"], "area"),
+    ("non-integer factor 1.5", [], ["--size", "1280x720"], "lanczos3"),
+    ("output width % 16 != 0", [], ["--size", "1000x562"], "lanczos3"),
+    ("same size (bit-exact)", [], ["--size", "same"], "lanczos3"),
+]
+
+
+def check_matrix(rep, cli, work, gate):
+    for i, (name, synth_args, conv_args, kernel) in enumerate(MATRIX):
+        label = "matrix: " + name
+        src, out = work / f"M{i:02d}" / f"M{i:02d}", work / f"M{i:02d}" / "out"
+        try:
+            run([cli, "synth", str(src), "--width", "1920", "--height", "1080", "--frames", "4", "--bits", "12",
+                 "--pattern", "scene", "--audio-channels", "2"] + synth_args)
+            r = subprocess.run([cli, "convert", str(src), "-o", str(out), "-q"] + conv_args, capture_output=True, text=True, timeout=3600)
+            dirs, partial = single_output(out)
+            if r.returncode != 0 or len(dirs) != 1 or partial:
+                rep.add(label, "failed", f"exit {r.returncode}, outputs {[d.name for d in dirs]}, partial {partial}: {(r.stdout + r.stderr)[-400:]}")
+                continue
+            rep.add(label, "passed", f"{dirs[0].name}")
+            run_gate(rep, label, src, dirs[0], kernel, gate)
+        except Exception as e:  # noqa: BLE001
+            rep.add(label, "failed", str(e)[-600:])
+    # A third-party source written by PiDNG (an independent DNG writer).
+    label = "matrix: third-party PiDNG source"
+    if importlib.util.find_spec("pidng") is None:
+        rep.tool_missing(label, "pidng not installed (pip install pidng)")
+    else:
+        src, out = work / "PD" / "P001", work / "PD" / "out"
+        try:
+            run([sys.executable, str(ROOT / "scripts" / "make_pidng_clip.py"), str(src), "--compress"])
+            r = subprocess.run([cli, "convert", str(src), "-o", str(out), "-q", "--size", "320x180"], capture_output=True, text=True, timeout=3600)
+            dirs, partial = single_output(out)
+            if r.returncode != 0 or len(dirs) != 1 or partial:
+                rep.add(label, "failed", f"exit {r.returncode}: {(r.stdout + r.stderr)[-400:]}")
+            else:
+                rep.add(label, "passed", dirs[0].name)
+                run_gate(rep, label, src, dirs[0], "lanczos3", gate)
+        except Exception as e:  # noqa: BLE001
+            rep.add(label, "failed", str(e)[-600:])
+    # Exit codes (I2): nothing written because the size is larger than the source -> 3.
+    label = "matrix: upscale request writes nothing, exit code 3"
+    src = work / "M00" / "M00"
+    r = subprocess.run([cli, "convert", str(src), "-o", str(work / "UP"), "-q", "--size", "6K"], capture_output=True, text=True)
+    dirs, partial = single_output(work / "UP")
+    rep.add(label, "passed" if r.returncode == 3 and not dirs and not partial else "failed", f"exit {r.returncode}")
+
+
 def wav_info(path):
     with open(path, "rb") as f:
         data = f.read()
     return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
-def check_raw_to_raw(rep, cli, work, frames, width, height):
+def check_raw_to_raw(rep, cli, work, frames, width, height, gate):
     name = "cinemadng-raw-to-raw 6K24 -> 2K24"
     src, out = work / "A001", work / "out"
     run([cli, "synth", str(src), "--width", str(width), "--height", str(height), "--frames", str(frames),
          "--fps", "24", "--audio-channels", "2", "--bits", "12", "--pattern", "scene"])
     srcp = run_json([cli, "probe", str(src)])
     run([cli, "convert", str(src), "-o", str(out), "--size", "2K", "--profile", "Q5", "--container", "cdng", "-q"])
-    produced = [p for p in out.iterdir()]
-    if len(produced) != 1 or not produced[0].is_dir():
-        rep.add(name, "failed", f"expected one output clip directory in {out}, found {[p.name for p in produced]}")
+    produced, partial = single_output(out)
+    if len(produced) != 1 or partial:
+        rep.add(name, "failed", f"expected one output clip directory in {out}, found {[p.name for p in produced]}, partial {partial}")
         return
     dst = produced[0]
     outp = run_json([cli, "probe", str(dst)])
@@ -162,6 +252,7 @@ def check_raw_to_raw(rep, cli, work, frames, width, height):
     rep.add(name, "failed" if problems else "passed",
             "; ".join(problems) or f"{width}x{height} -> {outp['width']}x{outp['height']} mosaic ({outp['cfa']}, {outp['bits']}-bit), "
             f"{outp['frames']} frames @ {outp['fps']} fps, TC {outp.get('timecode')}, audio bit-identical, size ratio {ratio:.3f}")
+    run_gate(rep, name, src, dst, "lanczos3", gate)
 
 
 def main():
@@ -175,6 +266,9 @@ def main():
     ap.add_argument("--width", type=int, default=6144)
     ap.add_argument("--height", type=int, default=3240)
     ap.add_argument("--report", default="", help="write the JSON report here")
+    ap.add_argument("--require-independent", action="store_true",
+                    help="fail (not skip) when rawpy/numpy/tifffile/pidng are missing; implied by --mode release")
+    ap.add_argument("--no-matrix", action="store_true", help="only the 6K24 -> 2K24 case")
     a = ap.parse_args()
     caps = json.loads(pathlib.Path(a.capabilities).read_text())
     rep = Report(a.mode)
@@ -195,11 +289,15 @@ def main():
             wanted = {c["acceptance"] for c in caps["capabilities"]}
             if "probe-samples" in wanted:
                 check_samples(rep, caps, cli, a.samples)
+            gate = independent_gate_available()
+            rep.require_tools = a.require_independent
             if "raw-to-raw-cdng" in wanted:
                 try:
-                    check_raw_to_raw(rep, cli, work, a.frames, a.width, a.height)
+                    check_raw_to_raw(rep, cli, work, a.frames, a.width, a.height, gate)
                 except Exception as e:  # noqa: BLE001
                     rep.add("cinemadng-raw-to-raw 6K24 -> 2K24", "failed", str(e))
+                if not a.no_matrix:
+                    check_matrix(rep, cli, work, gate)
     finally:
         if not a.work:
             shutil.rmtree(work, ignore_errors=True)

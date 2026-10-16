@@ -117,6 +117,10 @@ int main(int argc, char** argv) {
         hw2.cudaAvailable = pipeline::chooseResampler(o.useGpu).cuda;
         ctx.plan = planThreads(hw2, src.byteSize());
         auto r = pipeline::convertClip(job, o, ctx);
+        if (r.status != pipeline::ClipStatus::Done) {
+            std::cerr << "full pipeline conversion (memory codec) failed: " << r.message << "\n";
+            return 1;
+        }
         rows.push_back({"full pipeline, memory codec (" + r.resampler + ")", r.frames / r.seconds, 0, r.message});
     }
     if (!skipDisk) {
@@ -139,6 +143,11 @@ int main(int argc, char** argv) {
         hw2.cudaAvailable = pipeline::chooseResampler(o.useGpu).cuda;
         ctx.plan = planThreads(hw2, src.byteSize());
         auto r = pipeline::convertClip(job, o, ctx);
+        if (r.status != pipeline::ClipStatus::Done) {
+            std::cerr << "full pipeline conversion (CinemaDNG disk to disk) failed: " << r.message << "\n";
+            fs::remove_all(base, ec);
+            return 1;
+        }
         rows.push_back({"full pipeline, CinemaDNG disk -> disk incl. verify (" + r.resampler + ")", r.frames / r.seconds,
                         static_cast<double>(r.outputBytes >> 20), r.message + ", MiB written"});
         fs::remove_all(base, ec);

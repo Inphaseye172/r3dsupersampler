@@ -17,9 +17,9 @@ if ($LASTEXITCODE -ne 0) { throw "bootstrap failed" }
 $preset = if ($Config -eq "Debug") { "windows-debug" } else { "windows-release" }
 
 function Invoke-Native {
-  param([Parameter(Mandatory)][string]$Exe, [Parameter(ValueFromRemainingArguments)][string[]]$Args)
-  & $Exe @Args
-  if ($LASTEXITCODE -ne 0) { throw "$Exe $($Args -join ' ') failed with exit code $LASTEXITCODE" }
+  param([Parameter(Mandatory)][string]$Exe, [Parameter(ValueFromRemainingArguments)][string[]]$Rest)
+  & $Exe @Rest
+  if ($LASTEXITCODE -ne 0) { throw "$Exe $($Rest -join ' ') failed with exit code $LASTEXITCODE" }
 }
 
 # Use the VS developer environment if cl.exe is not already on PATH.
@@ -32,8 +32,9 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
 }
 
 if ($FetchSamples) {
-  $py = if (Get-Command py -ErrorAction SilentlyContinue) { @("py", "-3") } else { @("python") }
-  Invoke-Native $py[0] @($py[1..($py.Length - 1)] | Where-Object { $_ }) (Join-Path $root "scripts\fetch_samples.py")
+  # Executable and arguments kept apart: a one-element array assigned from `if` collapses to a string.
+  if (Get-Command py -ErrorAction SilentlyContinue) { $pyExe = "py"; $pyArgs = @("-3") } else { $pyExe = "python"; $pyArgs = @() }
+  Invoke-Native $pyExe @($pyArgs + @((Join-Path $root "scripts\fetch_samples.py")))
   $env:R3DSS_SAMPLES = Join-Path $root ".deps\samples"
 }
 

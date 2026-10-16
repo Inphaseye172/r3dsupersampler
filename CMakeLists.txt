@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(r3dss VERSION 0.2.0 LANGUAGES CXX)
+project(r3dss VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -147,6 +147,13 @@ endif()
 
 # ---- packaging ------------------------------------------------------------------------------
 install(FILES README.md LICENSE NOTICE PATENTS.md DESTINATION .)
+if(MSVC)
+  # App-local MSVC runtime (vcruntime140*.dll, msvcp140*.dll) so the package starts on a PC without the
+  # Visual C++ redistributable. The Universal CRT is part of Windows 10 and later.
+  set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION bin)
+  set(CMAKE_INSTALL_UCRT_LIBRARIES FALSE)
+  include(InstallRequiredSystemLibraries)
+endif()
 install(DIRECTORY docs/ DESTINATION docs FILES_MATCHING PATTERN "*.md")
 # Third-party license texts for what binary builds bundle (third_party/licenses/README.md).
 install(DIRECTORY third_party/licenses/ DESTINATION licenses)

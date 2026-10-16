@@ -45,8 +45,11 @@ plane offset, and shared by CPU and CUDA.
 
 ## 4. Clip-aware fallback
 
-If any Lanczos tap input on either pass is ≥ `white − 1`, that output sample is recomputed with
-the 2-D Area taps directly on the source plane. Lanczos' negative lobes otherwise produce dark
+An output sample is recomputed with the 2-D Area taps directly on the source plane when either
+any Lanczos tap input on either pass is ≥ `white − 1`, or the Lanczos result itself is ≥
+`white − 1`. The second condition stops overshoot next to bright but unclipped detail from creating
+new saturated sites that raw developers would treat as clipped: an area average of inputs that are
+all below `white − 1` cannot reach it. Lanczos' negative lobes otherwise produce dark
 halos and over-white overshoot around clipped highlights, the same artefact as a half-resolution
 R3D decode in Resolve (`docs/RESOLVE_NOTE.md`). The flag is carried through the horizontal pass
 as a byte per intermediate sample. The fallback is skipped for the Area kernel.
@@ -55,7 +58,8 @@ as a byte per intermediate sample. The fallback is skipped for the Area kernel.
 
 Weights sum to 1, so a constant plane maps to itself: black level and white level pass through
 unchanged (unit tests check this exactly). Arithmetic is float32, output is
-`clamp(round(v), 0, 2^bits − 1)` written as `uint16_t`; the frame keeps `bits`, `black[4]`,
+`clamp(round(v), 0, min(2^bits − 1, white))` written as `uint16_t`, so no output sample exceeds
+the white level; the frame keeps `bits`, `black[4]`,
 `white`, `cfa` and metadata. No dithering (raw data, the camera noise already dithers).
 
 ## 6. Pseudocode
@@ -83,13 +87,31 @@ one per output sample for the vertical pass; the fallback is evaluated in the ve
 `planOutputSize()` keeps the source aspect ratio, rounds to the codec's alignment (CinemaDNG 2,
 TicoRAW 8 **unconfirmed**) and refuses to upscale (the clip is skipped with a message).
 
-| Preset | Width | 16:9 height | 17:9 (4096×2160 source) |
+Heights follow the source aspect; two common ones:
+
+| Preset | Width | 16:9 source | 17:9 source (e.g. 6144×3240) |
 |---|---|---|---|
 | 6K | 6048 | 3402 | 3190 |
 | UHD | 3840 | 2160 | 2026 |
+| 2K (DCI) | 2048 | 1152 | 1080 |
 | FHD | 1920 | 1080 | 1012 |
 
-## 8. Expected quality versus a naive 2×2 bin
+A preset wider than the source is skipped (no upscaling): 6K from a 4096-wide clip writes nothing
+and the CLI exits with code 3. A custom `WxH` is used exactly; when its aspect differs from the
+source by more than 0.5 % the CLI warns, and the CinemaDNG writer sets `DefaultScale` so the
+displayed aspect stays the source's (non-square pixels instead of a squeezed picture).
+
+## 8. Resolution of a per-plane resample
+
+Each CFA plane is filtered to its own Nyquist frequency at the output size, which is half the
+output's pixel Nyquist. Detail finer than that (for example a stripe pattern whose period is
+under about 4 output pixels) is removed instead of aliasing into moiré and false colour. A
+developed image of the output is therefore softer on very fine detail than the source debayered at
+full resolution and then scaled down; smooth areas, colour and exposure are the same. This is
+inherent to keeping the result a genuine, undeveloped mosaic: a demosaic of the source would be
+needed to keep that detail, and the output would no longer be RAW.
+
+## 9. Expected quality versus a naive 2×2 bin
 
 - Bin (plain 4×4 super-pixel): positive weights, no ringing, best noise reduction, but a
   `sinc` response that passes aliases above the output Nyquist, softens detail near it, and

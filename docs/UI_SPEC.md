@@ -36,7 +36,7 @@ Right: options.
 
 | Group | Control | Values |
 |---|---|---|
-| Output | Size | 6K (6048 × 3402), UHD (3840 × 2160), Full HD (1920 × 1080), Same resolution (VBR only) |
+| Output | Size | 6K (6048 wide), UHD (3840 wide), 2K DCI (2048 wide), Full HD (1920 wide), Same resolution; heights follow the source aspect. Quality is disabled for CinemaDNG output, which is always lossless |
 | | Container | CinemaDNG (default); Keep source container (CinemaDNG sources only; REDCODE cannot be written). ProRes 4444 / XQ and DNxHR 444 / HQX arrive in milestone 4 |
 | | Quality | Q1 Maximum quality, Q3 High, Q5 Normal (default), Q7 Proxy |
 | | Filter | Lanczos-3 (sharp, clip-aware), Area average (soft, lowest noise) |
@@ -73,7 +73,7 @@ Skipped (reason) | Cancelled. Archive copies report in the summary label.
   reports (e.g. why NEV cannot be decoded yet).
 - **About**: version, what this build ships, the Resolve note.
 
-Settings persist via `QSettings` (organisation "Anchorpoint", application "R3DSupersampler").
+Settings persist via `QSettings` (organisation "Anchorpoint", application "r3dss").
 
 ## Messages (verbatim)
 

@@ -19,9 +19,9 @@ New-Item -ItemType Directory -Force $deps | Out-Null
 
 function Invoke-Native {
   # Runs a native command and fails the script if it returns a non-zero exit code.
-  param([Parameter(Mandatory)][string]$Exe, [Parameter(ValueFromRemainingArguments)][string[]]$Args)
-  & $Exe @Args
-  if ($LASTEXITCODE -ne 0) { throw "$Exe $($Args -join ' ') failed with exit code $LASTEXITCODE" }
+  param([Parameter(Mandatory)][string]$Exe, [Parameter(ValueFromRemainingArguments)][string[]]$Rest)
+  & $Exe @Rest
+  if ($LASTEXITCODE -ne 0) { throw "$Exe $($Rest -join ' ') failed with exit code $LASTEXITCODE" }
 }
 
 function Install-IfMissing {
@@ -40,19 +40,25 @@ Install-IfMissing -Command git -WingetId "Git.Git"
 Install-IfMissing -Command cmake -WingetId "Kitware.CMake"
 Install-IfMissing -Command ninja -WingetId "Ninja-build.Ninja"
 
-# Python: prefer the py launcher, then python3 / python.
+# Python: prefer the py launcher, then python3 / python. Each candidate is an executable plus its
+# arguments, kept as separate fields (a one-element PowerShell array would collapse to a string).
 $python = $null
-foreach ($candidate in @(@("py", "-3"), @("python3"), @("python"))) {
-  if (Get-Command $candidate[0] -ErrorAction SilentlyContinue) {
-    & $candidate[0] @($candidate[1..($candidate.Length - 1)]) -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" 2>$null
-    if ($LASTEXITCODE -eq 0) { $python = $candidate; break }
+$candidates = @(
+  [pscustomobject]@{ Exe = "py"; Args = @("-3") },
+  [pscustomobject]@{ Exe = "python3"; Args = @() },
+  [pscustomobject]@{ Exe = "python"; Args = @() }
+)
+foreach ($c in $candidates) {
+  if (Get-Command $c.Exe -ErrorAction SilentlyContinue) {
+    & $c.Exe @($c.Args + @("-c", "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)")) 2>$null
+    if ($LASTEXITCODE -eq 0) { $python = $c; break }
   }
 }
 if (-not $python) {
   Install-IfMissing -Command "py" -WingetId "Python.Python.3.12"
-  $python = @("py", "-3")
+  $python = [pscustomobject]@{ Exe = "py"; Args = @("-3") }
 }
-Write-Host "Python: $($python -join ' ')"
+Write-Host "Python: $($python.Exe) $($python.Args -join ' ')"
 
 # Visual Studio 2022 C++ tools.
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -85,9 +91,8 @@ if (-not $env:QT_ROOT) {
   $qtDir = Join-Path $qt "$QtVersion\msvc2022_64"
   if (-not (Test-Path (Join-Path $qtDir "bin\Qt6Core.dll"))) {
     Write-Host "== installing Qt $QtVersion ($QtArch) into $qt via aqtinstall"
-    $py = $python[0]; $pyArgs = @($python[1..($python.Length - 1)]) | Where-Object { $_ }
-    Invoke-Native $py @($pyArgs + @("-m", "pip", "install", "--user", "--upgrade", "aqtinstall"))
-    Invoke-Native $py @($pyArgs + @("-m", "aqt", "install-qt", "windows", "desktop", $QtVersion, $QtArch, "-O", $qt))
+    Invoke-Native $python.Exe @($python.Args + @("-m", "pip", "install", "--user", "--upgrade", "aqtinstall"))
+    Invoke-Native $python.Exe @($python.Args + @("-m", "aqt", "install-qt", "windows", "desktop", $QtVersion, $QtArch, "-O", $qt))
   }
   $env:QT_ROOT = $qtDir
 }

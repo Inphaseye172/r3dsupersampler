@@ -1,5 +1,5 @@
 # Builds the Inno Setup installer from dist\ (run scripts\build.ps1 first).
-param([string]$Version = "0.2.0")
+param([string]$Version = "0.3.0")
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"

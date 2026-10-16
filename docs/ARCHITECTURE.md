@@ -1,8 +1,9 @@
 # Architecture
 
-Updated 2026-10-15 for the REDCODE-via-SDK direction (`docs/IMPLEMENTATION_PLAN.md`). The RGB
-path (SDK decode → RGB resample → re-mosaic / ProRes / DNxHR) is added in milestones 2–4; this
-file describes the modules as they exist now.
+Updated 2026-10-16. The product is a RAW-to-RAW supersampler: CinemaDNG mosaic in, smaller
+CinemaDNG mosaic out, resampled per CFA plane and never debayered (`docs/IMPLEMENTATION_PLAN.md`).
+The RED SDK module identifies and decodes REDCODE to developed RGB for checking only. This file
+describes the modules as they exist now.
 
 ## 1. Modules
 
@@ -22,7 +23,7 @@ src/ratecontrol   r3dss_ratecontrol profiles, complexity estimator, VBR controll
 src/pipeline      r3dss_pipeline    job model (JSON), folder scanner, archive copier, verifier, clip converter, scheduler
 src/synth         r3dss_synth       synthetic mosaics and clips (tests, CLI `synth`, benchmark)
 src/cli           r3dss-cli         codecs | probe | convert | scan | synth
-src/gui           R3DSupersampler   Qt 6 Widgets batch GUI
+src/gui           r3dss-gui         Qt 6 Widgets batch GUI (also `--run-job JOB.json`, headless)
 bench             r3dss-bench       per-stage and end-to-end throughput
 tests             r3dss-tests       Catch2
 ```
@@ -99,8 +100,9 @@ range, minus a noise floor (10th percentile of 16×16-block means, i.e. flat are
 `curveScale` (0.05) and clamped to [0, 1]. Budget = `floor + (cap − floor)·c`, smoothed with an
 EMA (α = 0.3), hard-capped, multiplied by the output pixel count. The writer receives
 `FrameBudget{bits, lossless}`. TicoRAW's capped-rate parameter names are **unconfirmed** until the
-SDK is in hand (calibration is task 22). CinemaDNG ignores the budget (lossless) but the
-controller still runs; its average is reported as "budget bpp" next to the real bpp.
+SDK is in hand. CinemaDNG output is lossless and ignores the budget: the CLI and GUI report such
+outputs as "lossless" and disable the quality control; a lossy CinemaDNG encoder that uses the
+budget is milestone M-A.
 
 ## 6. Error handling and logging
 
@@ -108,7 +110,7 @@ controller still runs; its average is reported as "budget bpp" next to the real 
   InvalidArgument, Io, Format, Unsupported, CodecUnavailable, Cancelled, Verification, Internal.
 - A clip failure never aborts the batch; the batch summary counts done / failed / skipped /
   cancelled and the GUI row shows the message.
-- `Logger` (core) writes `%LOCALAPPDATA%\R3DSupersampler\logs\r3dss-gui.log` (Windows) or
+- `Logger` (core) writes `%LOCALAPPDATA%\r3dss\logs\r3dss-gui.log` (Windows) or
   `~/.local/share/r3dss/logs/` (Linux), rotating at 8 MiB × 3, plus stderr for the CLI and a
   callback sink for the GUI log pane. Levels trace … error.
 

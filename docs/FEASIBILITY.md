@@ -1,31 +1,39 @@
 # Feasibility: REDCODE RAW, R3D NE and NEV sources
 
-## 0. Decision 2026-10-15 (supersedes the sections below)
+## 0. Requirement and capability matrix (2026-10-16, supersedes the sections below)
 
-The container survey (`docs/CODESTREAM.md`) showed that the primary source is **RED KOMODO
-REDCODE RAW**, which no public code can decode at the Bayer level or encode, and that the
-**RED R3D SDK 9.2.1** decodes it, as well as Nikon R3D NE and NEV, to 16-bit RGB. The product
-therefore does:
+**Requirement (binding):** genuine RAW in, genuine RAW out at a lower resolution and smaller size,
+keeping frame rate, duration, audio, timecode and the RAW grading workflow. The sensor mosaic is
+resampled in the Bayer domain and never debayered. Developed RGB re-mosaiced into DNG, ProRes or
+DNxHR does **not** satisfy it; such outputs could only ever be optional, clearly labelled
+derivatives. An earlier version of this section said the "no debayer" requirement was withdrawn;
+that was wrong and is retracted.
 
-    RED R3D SDK decode → 16-bit linear RGB → resample (Lanczos-3 / Area) → re-mosaiced lossy
-    CinemaDNG, or ProRes 4444 / XQ, or DNxHR 444 / HQX
+"Mosaic decode" is an API that returns the undeveloped sensor mosaic; "RAW encode" is one that
+writes the camera's RAW format from a mosaic. RAW-to-RAW needs both.
 
-- The "no debayer" requirement is withdrawn. CinemaDNG *sources* are still resampled in the
-  Bayer domain (the original resampler is kept and gains RGB planes).
-- The intoPIX / TicoRAW path (§1.2, §3, §4 Path A below) is **dropped**: no option, no stubs, no
-  messages. A native JPEG XS-Bayer codec for Nikon output is a possible later phase, out of scope.
-- REDCODE, R3D NE and NEV are never written. The RED SDK is never committed; builds without it
-  recognise the clips and say why they cannot decode.
-- Licensing: the product is Apache-2.0 (`LICENSE`, `NOTICE`, `PATENTS.md`); the RED SDK runtime
-  is bundled by the installer under RED's redistribution terms (`docs/REDISTRIBUTION.md`, M6).
-- Source detection is by content (SDK metadata `camera_model` / `sensor_name` / `redcode`, or the
-  header strings of the RED chunk), never by extension: Komodo reports `sensor_name = "KOMODO S35"`,
-  Nikon R3D NE `sensor_name = "NIKON"` and `redcode = "R3D NE"`.
-- R3D NE limits (RED SDK notes): no GPU decompression, IPP2 only, optional 32-bit float audio,
-  100 / 120 fps timecode.
+| Source | Mosaic decode | RAW encode | Status |
+|---|---|---|---|
+| **REDCODE RAW (RED KOMODO)**, the maintainer's camera (`samples-v1`: KOMODO 6K, 6144×3240, 24 fps, `redcode` LQ) | **none**: the RED R3D SDK (9.2.1 verified, `docs/CODESTREAM.md` §6) outputs developed RGB only; `VideoPixelType` has no CFA type | **none**: the SDK only trims or snapshots existing compressed frames; nobody licenses a REDCODE encoder publicly | **Blocked.** No public or licensable component exposes the KOMODO mosaic or writes REDCODE. Only RED could change this (dependency D1). The SDK is used to identify and verify clips |
+| **Nikon R3D NE / NEV** | RED SDK: RGB only. A JPEG XS-Bayer (TicoRAW) decoder might read the essence if it is standard, **unconfirmed** without a Nikon clip and the vendor SDK | the same vendor's encoder, plus our own container writer; **unproven** | **Possible, unproven** (milestone M-B: evidence first) |
+| **CinemaDNG** (mosaic) | yes, our own reader (lossless JPEG and uncompressed, 8–16 bit, every CFA, IFD0 and SubIFD layouts, ActiveArea, LinearizationTable, opcodes) | yes, our own lossless writer; a lossy (DNG 1.4 compression 34892) quality-driven encoder is milestone M-A | **Working.** Each release is checked pixel for pixel against LibRaw on Linux and on the installed Windows package (`scripts/verify_cdng.py`) |
+| Blackmagic RAW, ProRes RAW, Canon RAW Light, ARRIRAW | SDKs return developed images or nothing public | none public | not RAW-to-RAW candidates |
 
-The plan is in `docs/IMPLEMENTATION_PLAN.md`. Sections 1–5 below are the 2026-10-14 research and
-are kept as history; their "Path C" recommendation is no longer current.
+Consequences:
+
+1. For the KOMODO the requirement cannot be met with any component that can be obtained today.
+   That is a hard blocker, stated in the product and its release notes, not hidden behind an RGB
+   substitute.
+2. Nikon sources are the realistic RAW-to-RAW target once the evidence in milestone M-B exists.
+3. CinemaDNG mosaic to smaller CinemaDNG mosaic is fully provable now and is what the product does.
+
+Licensing: Apache-2.0 covers only this project's code. The RED SDK runtime, any Nikon or vendor
+codec, Qt (LGPL-3.0) and other bundled libraries keep their own terms (`NOTICE`,
+`third_party/licenses`); production releases require the maintainer's confirmation of those terms
+(`R3DSS_THIRD_PARTY_TERMS_ACKNOWLEDGED`). Supersampler.app is an unrelated competitor.
+
+Sections 1–5 below are the 2026-10-14/15 research, kept as history. Their recommendations (the
+SDK-RGB "Path C" and the withdrawn-requirement plan) are not current.
 
 ---
 

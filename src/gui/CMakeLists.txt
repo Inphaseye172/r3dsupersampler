@@ -20,9 +20,19 @@ target_link_libraries(r3dss-gui PRIVATE r3dss_gui_lib)
 set_target_properties(r3dss-gui PROPERTIES OUTPUT_NAME "r3dss-gui")
 install(TARGETS r3dss-gui RUNTIME DESTINATION bin BUNDLE DESTINATION .)
 if(WIN32)
-  # Deploy Qt runtime next to the executable on install (windeployqt ships with Qt).
+  # Deploy the Qt runtime next to the executable on install (windeployqt ships with Qt). A missing or
+  # failing windeployqt is fatal: a package without Qt cannot start the GUI. The MSVC runtime is
+  # installed app-local by the root CMakeLists.txt (InstallRequiredSystemLibraries), so windeployqt's
+  # vc_redist installer is not shipped.
   find_program(R3DSS_WINDEPLOYQT windeployqt HINTS "${Qt6_DIR}/../../../bin")
-  if(R3DSS_WINDEPLOYQT)
-    install(CODE "execute_process(COMMAND \"${R3DSS_WINDEPLOYQT}\" --no-translations --no-system-d3d-compiler --no-opengl-sw \"\${CMAKE_INSTALL_PREFIX}/bin/r3dss-gui.exe\")")
+  if(NOT R3DSS_WINDEPLOYQT)
+    message(FATAL_ERROR "windeployqt not found next to Qt (${Qt6_DIR}); the GUI could not be packaged")
   endif()
+  install(CODE "
+    execute_process(COMMAND \"${R3DSS_WINDEPLOYQT}\" --no-translations --no-system-d3d-compiler --no-opengl-sw
+                            --no-compiler-runtime \"\${CMAKE_INSTALL_PREFIX}/bin/r3dss-gui.exe\" RESULT_VARIABLE _rc)
+    if(NOT _rc EQUAL 0)
+      message(FATAL_ERROR \"windeployqt failed (\${_rc})\")
+    endif()
+  ")
 endif()
