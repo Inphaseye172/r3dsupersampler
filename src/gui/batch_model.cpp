@@ -23,6 +23,21 @@ QString rowStateName(RowState s) {
     return "?";
 }
 
+QString describeResult(const pipeline::ClipResult& res) {
+    QString msg = QString::fromStdString(res.message);
+    if (res.status == pipeline::ClipStatus::Done) {
+        // A bit budget exists only for output codecs with rate control; CinemaDNG output is always lossless.
+        const QString coding = res.rateControl ? QString("budget %1 bpp").arg(res.averageBudgetBpp, 0, 'f', 2) : QString("lossless");
+        msg = QString("%1x%2 -> %3x%4, %5 frames, %6 s, %7 MiB, %8 bpp (%9, %10)")
+                  .arg(res.srcWidth).arg(res.srcHeight).arg(res.outWidth).arg(res.outHeight).arg(res.frames)
+                  .arg(res.seconds, 0, 'f', 1).arg(static_cast<double>(res.outputBytes) / (1024.0 * 1024.0), 0, 'f', 1)
+                  .arg(res.averageBpp, 0, 'f', 2).arg(coding, QString::fromStdString(res.resampler));
+    }
+    for (const auto& w : res.warnings) msg += "; warning: " + QString::fromStdString(w);
+    for (const auto& e : res.copyErrors) msg += "; archive copy failed: " + QString::fromStdString(e);
+    return msg;
+}
+
 BatchModel::BatchModel(QObject* parent) : QAbstractTableModel(parent) {}
 
 QVariant BatchModel::headerData(int section, Qt::Orientation o, int role) const {
@@ -60,17 +75,15 @@ QVariant BatchModel::data(const QModelIndex& idx, int role) const {
     return {};
 }
 
-bool BatchModel::addClip(const std::filesystem::path& source, const std::filesystem::path& outputDir,
-                         const std::filesystem::path& relativeDir) {
+bool BatchModel::addClip(const std::filesystem::path& source, const std::filesystem::path& root) {
     for (const auto& r : rows_)
         if (r.source == source) return true; // already listed
     auto factory = codec::CodecRegistry::instance().probe(source);
     if (!factory) return false;
     ClipRow row;
     row.source = source;
-    row.job.source = source;
-    row.job.outputDir = outputDir;
-    row.job.relativeDir = relativeDir;
+    row.root = root;
+    row.sourceFormat = factory->format();
     row.format = QString::fromStdString(codec::formatName(factory->format()));
     auto reader = factory->makeReader();
     auto info = reader->open(source);
@@ -107,13 +120,6 @@ void BatchModel::clear() {
     endResetModel();
 }
 
-void BatchModel::setOutputDir(const std::filesystem::path& dir) {
-    for (size_t i = 0; i < rows_.size(); ++i) {
-        rows_[i].job.outputDir = rows_[i].job.relativeDir.empty() ? dir : dir / rows_[i].job.relativeDir;
-    }
-    if (!rows_.empty()) emit dataChanged(index(0, Output), index(rowCount() - 1, Output));
-}
-
 void BatchModel::touch(int row) { emit dataChanged(index(row, 0), index(row, ColumnCount - 1)); }
 
 void BatchModel::setState(int row, RowState s, const QString& message) {
@@ -144,13 +150,7 @@ void BatchModel::setResult(int row, const pipeline::ClipResult& res) {
     case pipeline::ClipStatus::Cancelled: r.state = RowState::Cancelled; break;
     }
     r.output = toQString(res.output.filename());
-    QString msg = QString::fromStdString(res.message);
-    if (res.status == pipeline::ClipStatus::Done)
-        msg = QString("%1x%2 -> %3x%4, %5 frames, %6 s, %7 MiB, %8 bpp (%9)")
-                  .arg(res.srcWidth).arg(res.srcHeight).arg(res.outWidth).arg(res.outHeight).arg(res.frames)
-                  .arg(res.seconds, 0, 'f', 1).arg(res.outputBytes / (1024.0 * 1024.0), 0, 'f', 1)
-                  .arg(res.averageBpp, 0, 'f', 2).arg(QString::fromStdString(res.resampler));
-    r.message = msg;
+    r.message = describeResult(res);
     r.currentFps = 0;
     touch(row);
 }
