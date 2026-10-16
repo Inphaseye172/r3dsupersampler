@@ -56,7 +56,11 @@ TEST_CASE("Job JSON round trip") {
     REQUIRE(back->clips[0].outputName == "a_out");
     REQUIRE(back->copies[0].dest == fs::path("/out/x.txt"));
     REQUIRE_FALSE(batchJobFromJson("{not json"));
-    REQUIRE(expandName("{stem}_{size}_{profile}", "clip", b.options, codec::Format::RedFamily) == "clip_FHD_Q3");
+    // {profile} is "lossless" for codecs without rate control, {size} is the written WxH for custom sizes (I3)
+    REQUIRE(expandName("{stem}_{size}_{profile}", "clip", b.options, codec::Format::RedFamily) == "clip_FHD_lossless");
+    REQUIRE(expandName("{stem}_{size}_{profile}", "clip", b.options, codec::Format::Unknown) == "clip_FHD_Q3");
+    b.options.size = SizePreset::Custom;
+    REQUIRE(expandName("{stem}_{size}_{profile}", "clip", b.options, codec::Format::CinemaDNG) == "clip_100x50_lossless");
 }
 
 TEST_CASE("Memory clip through the full pipeline keeps geometry, audio and timecode") {
@@ -118,11 +122,12 @@ TEST_CASE("CinemaDNG clip end to end on disk with verification and output naming
     ClipResult r = convertClip(job, o, ctx);
     INFO(r.message);
     REQUIRE(r.status == ClipStatus::Done);
-    REQUIRE(r.output == dir / "out" / "A001_custom_Q5");
-    REQUIRE(fs::exists(dir / "out" / "A001_custom_Q5" / "A001_custom_Q5.wav"));
-    REQUIRE(codec::listDngFrames(dir / "out" / "A001_custom_Q5").size() == 6);
+    REQUIRE(r.output == dir / "out" / "A001_192x108_lossless");
+    REQUIRE(fs::exists(dir / "out" / "A001_192x108_lossless" / "A001_192x108_lossless.wav"));
+    REQUIRE(codec::listDngFrames(dir / "out" / "A001_192x108_lossless").size() == 6);
     REQUIRE(r.verification.ok);
-    REQUIRE(r.averageBudgetBpp >= 1.0);
+    REQUIRE_FALSE(r.rateControl); // CinemaDNG is always lossless: no budget
+    REQUIRE(r.averageBudgetBpp == 0.0);
     // Second run is skipped (exists), overwrite re-runs
     ClipResult r2 = convertClip(job, o, ctx);
     REQUIRE(r2.status == ClipStatus::Skipped);
@@ -179,7 +184,7 @@ TEST_CASE("Folder scan, archive copy with hash verification, scheduler and manif
     REQUIRE(res.copies.size() == 3);
     for (const auto& c : res.copies) REQUIRE(c.verified);
     REQUIRE(fs::exists(dir / "dst" / "day1" / "notes.txt"));
-    REQUIRE(fs::exists(dir / "dst" / "day2" / "sub" / "B002_custom_Q5"));
+    REQUIRE(fs::exists(dir / "dst" / "day2" / "sub" / "B002_64x36_lossless"));
     REQUIRE(fs::exists(res.manifest));
     // Scanning a clip directory directly yields exactly that clip
     auto single = scanFolder(dir / "src" / "day1" / "B001", dir / "x", so);
@@ -229,7 +234,7 @@ TEST_CASE("Non-ASCII folder and clip names convert end to end and survive job JS
     Scheduler s;
     BatchResult res = s.run(*loaded, {});
     REQUIRE(res.done == 1);
-    const fs::path out = b.outputRoot / fromUtf8("\xE6\x92\xAE\xE5\xBD\xB1_A001_custom_Q5");
+    const fs::path out = b.outputRoot / fromUtf8("\xE6\x92\xAE\xE5\xBD\xB1_A001_64x36_lossless");
     REQUIRE(codec::listDngFrames(out).size() == 2);
-    REQUIRE(fs::exists(out / fromUtf8("\xE6\x92\xAE\xE5\xBD\xB1_A001_custom_Q5.wav")));
+    REQUIRE(fs::exists(out / fromUtf8("\xE6\x92\xAE\xE5\xBD\xB1_A001_64x36_lossless.wav")));
 }

@@ -33,7 +33,14 @@ Expected<JobOptions> optionsFromJson(const json& j) {
         if (!s) return makeError(ErrorCode::InvalidArgument, "unknown size preset");
         o.size = *s;
     }
-    if (j.contains("customSize")) o.customSize = resample::OutputSize{j["customSize"]["width"], j["customSize"]["height"]};
+    if (j.contains("customSize")) {
+        const int64_t w = j["customSize"].value("width", int64_t{0}), h = j["customSize"].value("height", int64_t{0});
+        if (const std::string err = checkCustomSize(w, h); !err.empty())
+            return makeError(ErrorCode::InvalidArgument, "invalid customSize " + std::to_string(w) + "x" + std::to_string(h) + ": " + err);
+        o.customSize = resample::OutputSize{static_cast<uint32_t>(w), static_cast<uint32_t>(h)};
+    }
+    if (o.size == SizePreset::Custom && !o.customSize)
+        return makeError(ErrorCode::InvalidArgument, "size \"custom\" needs customSize {width, height}");
     if (j.contains("outputFormat")) {
         const std::string f = j["outputFormat"].get<std::string>();
         if (f != "keep") {
@@ -71,11 +78,17 @@ std::string batchJobToJson(const BatchJob& b) {
     j["archiveMode"] = b.archiveMode;
     j["options"] = optionsToJson(b.options);
     j["clips"] = json::array();
-    for (const auto& c : b.clips)
-        j["clips"].push_back({{"source", toUtf8Generic(c.source)},
-                              {"outputDir", toUtf8Generic(c.outputDir)},
-                              {"outputName", c.outputName},
-                              {"relativeDir", toUtf8Generic(c.relativeDir)}});
+    for (const auto& c : b.clips) {
+        json cj = {{"source", toUtf8Generic(c.source)},
+                   {"outputDir", toUtf8Generic(c.outputDir)},
+                   {"outputName", c.outputName},
+                   {"relativeDir", toUtf8Generic(c.relativeDir)}};
+        if (!c.sidecars.empty()) {
+            cj["sidecars"] = json::array();
+            for (const auto& s : c.sidecars) cj["sidecars"].push_back(toUtf8Generic(s));
+        }
+        j["clips"].push_back(cj);
+    }
     j["copies"] = json::array();
     for (const auto& c : b.copies) j["copies"].push_back({{"source", toUtf8Generic(c.source)}, {"dest", toUtf8Generic(c.dest)}});
     return j.dump(2, ' ', false, json::error_handler_t::replace);
@@ -99,10 +112,11 @@ Expected<BatchJob> batchJobFromJson(const std::string& text) {
         }
         for (const auto& c : j.value("clips", json::array())) {
             ClipJob cj;
-            cj.source = fromUtf8(c.value("source", ""));
+            cj.source = normaliseSourcePath(fromUtf8(c.value("source", "")));
             cj.outputDir = fromUtf8(c.value("outputDir", ""));
             cj.outputName = c.value("outputName", "");
             cj.relativeDir = fromUtf8(c.value("relativeDir", ""));
+            for (const auto& sc : c.value("sidecars", json::array())) cj.sidecars.push_back(fromUtf8(sc.get<std::string>()));
             b.clips.push_back(cj);
         }
         for (const auto& c : j.value("copies", json::array())) b.copies.push_back({fromUtf8(c.value("source", "")), fromUtf8(c.value("dest", ""))});

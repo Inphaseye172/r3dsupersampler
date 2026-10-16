@@ -8,8 +8,11 @@ std::shared_ptr<ThreadPool> g_pool;
 size_t g_threads = 0;
 } // namespace
 
+// Changing the size replaces the pool; work already running keeps the old pool alive (shared_ptr)
+// until it finishes, so a batch can resize it before it starts. Same size: no-op.
 void configureSharedThreadPool(size_t threads) {
     std::lock_guard<std::mutex> lk(g_m);
+    if (threads == g_threads) return;
     g_threads = threads;
     g_pool.reset();
 }

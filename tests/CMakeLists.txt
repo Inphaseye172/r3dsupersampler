@@ -8,6 +8,7 @@ add_executable(r3dss-tests
   test_cdng_reader.cpp
   test_cdng_golden.cpp
   test_pipeline.cpp
+  test_pipeline_safety.cpp
   test_cuda.cpp
   test_red_container.cpp
   test_samples.cpp

@@ -7,6 +7,7 @@ add_library(r3dss_pipeline STATIC
   src/verifier.cpp
   src/clip_converter.cpp
   src/scheduler.cpp
+  src/output_claim.cpp
 )
 add_library(r3dss::pipeline ALIAS r3dss_pipeline)
 target_include_directories(r3dss_pipeline PUBLIC include)
