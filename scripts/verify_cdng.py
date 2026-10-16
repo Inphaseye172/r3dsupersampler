@@ -21,7 +21,7 @@ Needs: pip install rawpy numpy tifffile. Exit code 0 = passed, 1 = failed, 2 = u
 Usage: verify_cdng.py SOURCE_CLIP_DIR OUTPUT_CLIP_DIR [--kernel lanczos3|area] [--no-clip-aware]
                       [--frames 0,12,23] [--report out.json]
 """
-import argparse, glob, json, math, os, sys
+import argparse, json, math, os, sys
 
 import numpy as np
 import rawpy
@@ -218,6 +218,15 @@ def linearization_step(path):
     return tol
 
 
+
+def dng_frames(folder):
+    # One listing, matched case-insensitively: globbing "*.dng" and "*.DNG" separately counts every
+    # frame twice on Windows, where glob ignores case. AppleDouble "._*" files are not frames.
+    if not os.path.isdir(folder):
+        return []
+    return sorted(os.path.join(folder, n) for n in os.listdir(folder)
+                  if n.lower().endswith(".dng") and not n.startswith("."))
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("source")
@@ -227,9 +236,7 @@ def main():
     ap.add_argument("--frames", default="", help="comma-separated frame indices (default: first, middle, last)")
     ap.add_argument("--report", default="")
     a = ap.parse_args()
-    src = sorted(f for f in glob.glob(os.path.join(a.source, "*.dng")) + glob.glob(os.path.join(a.source, "*.DNG"))
-                 if not os.path.basename(f).startswith("."))
-    out = sorted(glob.glob(os.path.join(a.output, "*.dng")))
+    src, out = dng_frames(a.source), dng_frames(a.output)
     if not src or not out:
         print(f"no DNG frames found (source {len(src)}, output {len(out)})", file=sys.stderr)
         return 2
