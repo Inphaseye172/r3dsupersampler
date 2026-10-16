@@ -11,14 +11,20 @@ namespace r3dss::gui {
 enum class RowState { Queued, Probing, Running, Encoding, Verifying, Done, Failed, Skipped, Copied, Cancelled };
 QString rowStateName(RowState s);
 
+// One line describing a finished clip (table message column and `r3dss-gui --run-job` output).
+QString describeResult(const pipeline::ClipResult& r);
+
 struct ClipRow {
     std::filesystem::path source;
+    // The folder "Add folder" found this clip in (empty for clips added one by one). Output locations
+    // are not stored per row: BatchTab::buildJob() derives them from the panel's state at start time.
+    std::filesystem::path root;
+    codec::Format sourceFormat = codec::Format::Unknown;
     QString format, resolution, fps, frames, output, message;
     RowState state = RowState::Queued;
     int progressPercent = 0;
     double currentFps = 0.0;
     bool probeOk = false;
-    pipeline::ClipJob job;
 };
 
 class BatchModel final : public QAbstractTableModel {
@@ -32,13 +38,12 @@ public:
     QVariant data(const QModelIndex& idx, int role) const override;
     QVariant headerData(int section, Qt::Orientation o, int role) const override;
 
-    // Probes the clip (format, geometry) and appends it. Returns false if not a raw clip.
-    bool addClip(const std::filesystem::path& source, const std::filesystem::path& outputDir,
-                 const std::filesystem::path& relativeDir = {});
+    // Probes the clip (format, geometry) and appends it. Returns false if not a raw clip; a clip that is
+    // already listed is not added again (returns true). `root`: the added folder it was found in.
+    bool addClip(const std::filesystem::path& source, const std::filesystem::path& root = {});
     void removeRows(const QList<int>& rows);
     void clear();
     const std::vector<ClipRow>& rows() const { return rows_; }
-    void setOutputDir(const std::filesystem::path& dir);
     void setState(int row, RowState s, const QString& message = {});
     void setProgress(int row, const pipeline::ClipProgress& p);
     void setResult(int row, const pipeline::ClipResult& r);
