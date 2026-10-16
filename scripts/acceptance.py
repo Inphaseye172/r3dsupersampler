@@ -173,14 +173,14 @@ def check_matrix(rep, cli, work, gate):
             run_gate(rep, label, src, dirs[0], kernel, gate)
         except Exception as e:  # noqa: BLE001
             rep.add(label, "failed", str(e)[-600:])
-    # A third-party source written by PiDNG (an independent DNG writer).
-    label = "matrix: third-party PiDNG source"
-    if importlib.util.find_spec("pidng") is None:
-        rep.tool_missing(label, "pidng not installed (pip install pidng)")
+    # A third-party source written by tifffile, an independent TIFF/DNG writer (big-endian, uncompressed).
+    label = "matrix: third-party source (tifffile writer, big-endian)"
+    if not gate:
+        rep.tool_missing(label, "numpy / tifffile not installed (pip install numpy tifffile)")
     else:
-        src, out = work / "PD" / "P001", work / "PD" / "out"
+        src, out = work / "FC" / "F001", work / "FC" / "out"
         try:
-            run([sys.executable, str(ROOT / "scripts" / "make_pidng_clip.py"), str(src), "--compress"])
+            run([sys.executable, str(ROOT / "scripts" / "make_foreign_clip.py"), str(src)])
             r = subprocess.run([cli, "convert", str(src), "-o", str(out), "-q", "--size", "320x180"], capture_output=True, text=True, timeout=3600)
             dirs, partial = single_output(out)
             if r.returncode != 0 or len(dirs) != 1 or partial:
@@ -267,7 +267,7 @@ def main():
     ap.add_argument("--height", type=int, default=3240)
     ap.add_argument("--report", default="", help="write the JSON report here")
     ap.add_argument("--require-independent", action="store_true",
-                    help="fail (not skip) when rawpy/numpy/tifffile/pidng are missing; implied by --mode release")
+                    help="fail (not skip) when rawpy/numpy/tifffile are missing; implied by --mode release")
     ap.add_argument("--no-matrix", action="store_true", help="only the 6K24 -> 2K24 case")
     a = ap.parse_args()
     caps = json.loads(pathlib.Path(a.capabilities).read_text())

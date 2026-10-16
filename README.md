@@ -84,13 +84,13 @@ CMake options: `R3DSS_WITH_R3DSDK`, `R3DSS_WITH_CUDA`, `R3DSS_BUILD_GUI` (all AU
 python3 scripts/fetch_samples.py                 # samples-v1 into .deps/samples, SHA-256 verified
 export R3DSS_SAMPLES=$PWD/.deps/samples
 ctest --preset linux-ci
-pip install rawpy numpy tifffile pidng           # independent decoder and a third-party DNG writer
+pip install rawpy numpy tifffile                 # independent decoder (tifffile also writes a third-party source)
 python3 scripts/acceptance.py --bin <installed bin dir> --mode dev --require-independent
 ```
 
 `scripts/acceptance.py` converts a 6K24 clip to 2K24 and a matrix of smaller cases (every CFA
 pattern, 23.976 drop and non-drop timecode, 25p, 50p, uncompressed source, Area kernel, a 1.5×
-factor, a width that is not a multiple of 16, same size, and a clip written by PiDNG) and checks each
+factor, a width that is not a multiple of 16, same size, and a big-endian clip written by tifffile) and checks each
 output with `scripts/verify_cdng.py`. That script decodes source and output with LibRaw and checks
 that the output mosaic is exactly the documented resample of the source (within 1 code value), that
 the developed picture has no colour or phase shift, and that every source tag reached the output.

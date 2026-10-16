@@ -23,9 +23,9 @@ env:
   # SDK tests skip.
   R3DSDK_ZIP_URL: ${{ secrets.R3DSDK_ZIP_URL }}
   R3DSDK_TOKEN: ${{ secrets.R3DSDK_TOKEN }}
-  # The independent pixel + tag gate (scripts/verify_cdng.py) and the third-party DNG writer used by
-  # the acceptance matrix. Pinned so a tool update cannot change what "passed" means.
-  GATE_TOOLS: rawpy==0.27.1 numpy==2.5.4 tifffile==2026.9.20 pidng==4.0.9
+  # The independent pixel + tag gate (scripts/verify_cdng.py); tifffile also writes the matrix's
+  # third-party source. Pinned so a tool update cannot change what "passed" means.
+  GATE_TOOLS: rawpy==0.27.1 numpy==2.5.4 tifffile==2026.9.20
 
 jobs:
   linux:

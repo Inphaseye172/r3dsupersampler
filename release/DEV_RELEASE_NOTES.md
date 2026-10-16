@@ -33,8 +33,8 @@ the SDK and the maintainer's confirmation of the third-party distribution terms
 On Linux and on GitHub's `windows-latest` runner: unit tests, then the acceptance run from the
 installed program (on Windows after a silent install of the attached installer). That converts a 6K24 clip to 2K24 and
 a matrix of cases (every CFA pattern, 23.976 drop and non-drop timecode, 25p, 50p, uncompressed
-source, area filter, a 1.5x factor, a width that is not a multiple of 16, same size, and a clip
-written by PiDNG, an independent DNG writer). Each output is decoded with LibRaw and must equal the
+source, area filter, a 1.5x factor, a width that is not a multiple of 16, same size, and a big-endian clip
+written by tifffile, an independent DNG writer). Each output is decoded with LibRaw and must equal the
 documented resample of the source within 1 code value, with no colour or phase shift and every
 source tag carried over (`acceptance-windows.json`, `acceptance-linux.json`). CI also checks that
 every DLL the package needs is inside it, including the Visual C++ runtime, and runs the installed
